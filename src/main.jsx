@@ -92,59 +92,49 @@ function Admin({session,publicSite}){
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearch} setTotal={sets.length} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
-function CardModal({form,setForm,locations,sets,setSearch,setTotal,editing,busy,msg,close,submit}){
- const [cardQuery,setCardQuery]=useState(form.card_number||"");
- const [cardChoices,setCardChoices]=useState([]);
- const [cardBusy,setCardBusy]=useState(false);
+function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close,submit}){
  const [setOpen,setSetOpen]=useState(false);
  const [cardOpen,setCardOpen]=useState(false);
+ const [cardQuery,setCardQuery]=useState(form.card_number||"");
+ const [cards,setCards]=useState([]);
+ const [cardBusy,setCardBusy]=useState(false);
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
 
  const filteredSets=useMemo(()=>{
-   const x=setSearch.toLowerCase().trim();
-   if(!x) return sets.slice(0,20);
-   return sets.filter(s=>`${s.name} ${s.id}`.toLowerCase().includes(x)).slice(0,20);
+   const q=(setSearch||"").toLowerCase().trim();
+   return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
  },[sets,setSearch]);
 
- async function chooseSet(setObj){
-   setForm(f=>({...f,set_id:setObj.id,set_code:setObj.id,set_name:setObj.name,set_symbol_url:setObj.symbol||""}));
-   setSearch(setObj.name);
+ function chooseSet(x){
+   setForm(f=>({...f,set_id:x.id||"",set_code:x.id||"",set_name:x.name||"",set_symbol_url:x.symbol||""}));
+   setSearch(x.name||"");
    setSetOpen(false);
    setCardQuery("");
-   setCardChoices([]);
+   setCards([]);
  }
 
- async function findCards(v){
-   setCardQuery(v);
-   set("card_number",v);
-   if(!form.set_id || !v.trim()){setCardChoices([]);return}
+ async function searchCards(value){
+   setCardQuery(value);
+   set("card_number",value);
+   if(!form.set_id || !value.trim()){setCards([]);return;}
    setCardBusy(true);
    try{
-     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}/${encodeURIComponent(v.trim())}`);
-     if(r.ok){
-       const c=await r.json();
-       setCardChoices([c]);
-     }else{
-       const r2=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}`);
-       if(r2.ok){
-         const setData=await r2.json();
-         const q=v.toLowerCase().trim();
-         const choices=(setData.cards||[]).filter(c=>`${c.localId} ${c.name}`.toLowerCase().includes(q)).slice(0,20);
-         setCardChoices(choices);
-       }else setCardChoices([]);
-     }
-   }catch(e){setCardChoices([])}
-   setCardBusy(false);
+     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}`);
+     if(!r.ok) throw new Error("Card lookup failed");
+     const data=await r.json();
+     const q=value.toLowerCase().trim();
+     const matches=(data.cards||[]).filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20);
+     setCards(matches);
+   }catch(e){setCards([])}
+   finally{setCardBusy(false)}
  }
 
  async function chooseCard(c){
    let full=c;
-   if(!c.rarity || !c.set){
-     try{
-       const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(c.id)}`);
-       if(r.ok) full=await r.json();
-     }catch(e){}
-   }
+   try{
+     const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(c.id)}`);
+     if(r.ok) full=await r.json();
+   }catch(e){}
    setForm(f=>({...f,
      name:full.name||f.name,
      card_number:full.localId||f.card_number,
@@ -154,50 +144,61 @@ function CardModal({form,setForm,locations,sets,setSearch,setTotal,editing,busy,
      set_name:full.set?.name||f.set_name,
      set_symbol_url:full.set?.symbol||f.set_symbol_url
    }));
-   setCardQuery(full.localId||full.name||"");
-   setCardChoices([]);
+   setCardQuery(full.localId||"");
+   setCards([]);
    setCardOpen(false);
  }
 
- return <div className="modal-backdrop"><div className="modal"><div className="modalhead"><div><span className="eyebrow">{editing?"EDIT INVENTORY":"NEW STOCK"}</span><h2>{editing?"Edit card":"Add card"}</h2></div><button className="x" onClick={close}>×</button></div><form onSubmit={submit}>
-   <div className="autocomplete">
-     <label>Set</label>
-     <input value={setSearch} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);set("set_id","");set("set_name","");set("set_code","");set("set_symbol_url","");setSetOpen(true)}} placeholder="Search sets — e.g. Jungle, Neo Genesis, Base"/>
-     {setOpen&&<div className="suggestions">
-       {filteredSets.map(s=><button type="button" className="suggestion" key={s.id} onMouseDown={e=>e.preventDefault()} onClick={()=>chooseSet(s)}>
-         {s.symbol?<img src={s.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}
-         <span><b>{s.name}</b><small>{s.id} · {s.cardCount?.official||s.cardCount?.total||"?"} cards</small></span>
-       </button>)}
-       {!filteredSets.length&&<div className="noresults">No matching sets.</div>}
-     </div>}
+ return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}>
+   <div className="modal" onMouseDown={e=>e.stopPropagation()}>
+    <div className="modalhead"><div><span className="eyebrow">{editing?"EDIT INVENTORY":"NEW STOCK"}</span><h2>{editing?"Edit card":"Add card"}</h2></div><button type="button" className="x" onClick={close}>×</button></div>
+    <form onSubmit={submit}>
+      <div className="autocomplete">
+       <label>Set</label>
+       <input value={setSearch||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
+       {setOpen&&<div className="suggestions" onMouseLeave={()=>{}}>
+        {filteredSets.map(x=><button type="button" className="suggestion" key={x.id} onClick={()=>chooseSet(x)}>
+          {x.symbol?<img src={x.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}
+          <span><b>{x.name}</b><small>{x.id}</small></span>
+        </button>)}
+        {!filteredSets.length&&<div className="noresults">No matching sets.</div>}
+       </div>}
+      </div>
+
+      {form.set_id&&<div className="setpreview">
+       {form.set_symbol_url?<img src={form.set_symbol_url} alt="Set symbol" onError={e=>{e.currentTarget.style.display="none"}}/>:<span className="symbolplaceholder">◈</span>}
+       <span><b>{form.set_name}</b><small>{form.set_code}</small></span>
+      </div>}
+
+      <div className="autocomplete">
+       <label>Card number / Pokémon</label>
+       <input value={cardQuery} onFocus={()=>setCardOpen(true)} onChange={e=>{setCardOpen(true);searchCards(e.target.value)}} placeholder={form.set_id?"e.g. 32 or Nidorina":"Select a set first"} disabled={!form.set_id}/>
+       {cardOpen&&form.set_id&&cardQuery.trim()&&<div className="suggestions">
+        {cardBusy&&<div className="noresults">Searching cards…</div>}
+        {!cardBusy&&cards.map(c=><button type="button" className="suggestion" key={c.id} onClick={()=>chooseCard(c)}>
+          {c.image?<img className="cardthumb" src={c.image} alt=""/>:null}
+          <span><b>#{c.localId} {c.name}</b><small>TCGdex card</small></span>
+        </button>)}
+        {!cardBusy&&!cards.length&&<div className="noresults">No matching card. You can enter it manually below.</div>}
+       </div>}
+      </div>
+
+      <div className="two">
+       <label>Card name<input required value={form.name||""} onChange={e=>set("name",e.target.value)}/></label>
+       <label>Card number<input value={form.card_number||""} onChange={e=>{set("card_number",e.target.value);setCardQuery(e.target.value)}}/></label>
+       <label>Language<select value={form.language||"English"} onChange={e=>set("language",e.target.value)}>{["English","Japanese","German","French","Spanish","Portuguese","Korean","Chinese","Polish","Russian","Other"].map(x=><option key={x}>{x}</option>)}</select></label>
+       <label>Variant<input value={form.variant||"Normal"} onChange={e=>set("variant",e.target.value)}/></label>
+       <label>Condition<input value={form.condition||"NM"} onChange={e=>set("condition",e.target.value)}/></label>
+       <label>Quantity<input type="number" min="1" value={form.quantity||1} onChange={e=>set("quantity",e.target.value)}/></label>
+       <label>Cost / card (£)<input type="number" step="0.0001" min="0" value={form.cost_per_card||0} onChange={e=>set("cost_per_card",e.target.value)}/></label>
+       <label>Rarity<input value={form.rarity||""} onChange={e=>set("rarity",e.target.value)}/></label>
+      </div>
+      <label>Storage location<select value={form.location_id||""} onChange={e=>set("location_id",e.target.value)}><option value="">No location yet</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+      {msg&&<div className="alert">{msg}</div>}
+      <div className="modalactions"><button type="button" className="ghost" onClick={close}>Cancel</button><button type="submit" disabled={busy}>{busy?(editing?"Saving…":"Adding…"):(editing?"Save changes":"Add to inventory")}</button></div>
+    </form>
    </div>
-   {form.set_id&&<div className="setpreview"><img src={form.set_symbol_url||""} alt="" onError={e=>e.currentTarget.style.display="none"}/><span><b>{form.set_name}</b><small>{form.set_code}</small></span></div>}
-   <div className="autocomplete">
-     <label>Card number / Pokémon</label>
-     <input value={cardQuery} onFocus={()=>setCardOpen(true)} onChange={e=>{setCardOpen(true);findCards(e.target.value)}} placeholder={form.set_id?"e.g. 111 or Bidoof":"Select a set first"} disabled={!form.set_id}/>
-     {cardOpen&&form.set_id&&cardQuery.trim()&&<div className="suggestions">
-       {cardBusy&&<div className="noresults">Searching cards…</div>}
-       {!cardBusy&&cardChoices.map(c=><button type="button" className="suggestion" key={c.id||c.localId} onMouseDown={e=>e.preventDefault()} onClick={()=>chooseCard(c)}>
-         {c.image?<img className="cardthumb" src={c.image} alt=""/>:null}
-         <span><b>#{c.localId} {c.name}</b><small>{c.rarity||"Card"}</small></span>
-       </button>)}
-       {!cardBusy&&!cardChoices.length&&<div className="noresults">No card found — you can still enter the details manually.</div>}
-     </div>}
-   </div>
-   <div className="two">
-     <label>Card name<input required value={form.name} onChange={e=>set("name",e.target.value)}/></label>
-     <label>Card number<input value={form.card_number} onChange={e=>set("card_number",e.target.value)}/></label>
-     <label>Language<select value={form.language} onChange={e=>set("language",e.target.value)}>{["English","Japanese","German","French","Spanish","Portuguese","Korean","Chinese","Polish","Russian","Other"].map(x=><option key={x}>{x}</option>)}</select></label>
-     <label>Variant<input value={form.variant} onChange={e=>set("variant",e.target.value)}/></label>
-     <label>Condition<input value={form.condition} onChange={e=>set("condition",e.target.value)}/></label>
-     <label>Quantity<input type="number" min="1" value={form.quantity} onChange={e=>set("quantity",e.target.value)}/></label>
-     <label>Cost / card (£)<input type="number" step="0.0001" min="0" value={form.cost_per_card} onChange={e=>set("cost_per_card",e.target.value)}/></label>
-     <label>Rarity<input value={form.rarity} onChange={e=>set("rarity",e.target.value)}/></label>
-   </div>
-   <label>Storage location<select value={form.location_id} onChange={e=>set("location_id",e.target.value)}><option value="">No location yet</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
-   {msg&&<div className="alert">{msg}</div>}
-   <div className="modalactions"><button type="button" className="ghost" onClick={close}>Cancel</button><button disabled={busy}>{busy?(editing?"Saving…":"Adding…"):(editing?"Save changes":"Add to inventory")}</button></div>
- </form></div></div>
+ </div>
 }
 function BatchTool({inventory,onDone}){
  const [text,setText]=useState(""),[result,setResult]=useState(null),[busy,setBusy]=useState(false);
