@@ -1,16 +1,9 @@
-# Paul's Poke Pulls
+# Paul's Poke Pulls V3
 
-V1 foundation: public catalogue + private Supabase-authenticated admin area.
+Adds a searchable Pokémon TCG set selector, set IDs/symbols, and editable inventory records.
 
-## Local
-`npm install`
-Copy `.env.example` to `.env.local`, add the Supabase URL and publishable key, then run `npm run dev`.
+1. Run `supabase_v3_migration.sql` once in Supabase SQL Editor.
+2. Replace the repository files with this V3 project.
+3. Commit to `main` and let GitHub Actions deploy.
 
-## GitHub Pages
-Add repository Actions secrets:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_PUBLISHABLE_KEY`
-
-Enable GitHub Pages with **GitHub Actions** as the source.
-
-Next: proper admin roles, batch processing, scanning/barcodes, Cardmarket pricing, ACE, sales and accounting.
+The set selector uses the TCGdex REST API, which provides set names, IDs and symbols.
