@@ -4,7 +4,7 @@ import {supabase} from "./lib/supabase";
 import "./styles.css";
 
 const API="https://api.tcgdex.net/v2/en/sets";
-const blank={name:"",set_name:"",set_code:"",set_id:"",set_symbol_url:"",card_number:"",language:"English",variant:"Normal",rarity:"",quantity:1,condition:"NM",cost_per_card:"0",status:"available",location_id:""};
+const blank={name:"",english_name:"",set_name:"",set_code:"",set_id:"",set_symbol_url:"",card_number:"",language:"English",variant:"Normal",rarity:"",quantity:1,condition:"NM",cost_per_card:"0",status:"available",location_id:"",cardmarket_product_id:"",cardmarket_name:"",cardmarket_expansion:"",cardmarket_language:"",cardmarket_url:""};
 const demo=[{id:"d1",name:"Bidoof",set_name:"Brilliant Stars",card_number:"111/172",language:"English",variant:"Normal",quantity:14,status:"available"}];
 
 function nav(path){history.pushState({}, "", path);dispatchEvent(new PopStateEvent("popstate"))}
@@ -59,7 +59,7 @@ function Admin({session,publicSite}){
  async function load(){
   if(!supabase)return;
   const [i,l]=await Promise.all([
-   supabase.from("inventory").select("id,quantity,condition,status,cost_per_card,location_id,cards(id,name,set_name,set_code,set_id,set_symbol_url,card_number,language,variant,rarity)").order("created_at",{ascending:false}),
+   supabase.from("inventory").select("id,quantity,condition,status,cost_per_card,location_id,cards(id,name,english_name,set_name,set_code,set_id,set_symbol_url,card_number,language,variant,rarity,cardmarket_product_id,cardmarket_name,cardmarket_expansion,cardmarket_language,cardmarket_url)").order("created_at",{ascending:false}),
    supabase.from("locations").select("id,name").order("name")
   ]);
   if(i.error)setMsg(i.error.message);else setInv(i.data||[]);
@@ -73,7 +73,7 @@ function Admin({session,publicSite}){
 
  async function saveCard(e){
   e.preventDefault();setBusy(true);setMsg("");
-  const cardPayload={name:form.name.trim(),english_name:(form.english_name||form.name||"").trim(),set_name:form.set_name.trim(),set_code:form.set_code||null,set_id:form.set_id||null,set_symbol_url:form.set_symbol_url||null,card_number:form.card_number||null,language:form.language,variant:form.variant,rarity:form.rarity||null};
+  const cardPayload={name:form.name.trim(),english_name:(form.english_name||form.name||"").trim(),set_name:form.set_name.trim(),set_code:form.set_code||null,set_id:form.set_id||null,set_symbol_url:form.set_symbol_url||null,card_number:form.card_number||null,language:form.language,variant:form.variant,rarity:form.rarity||null,cardmarket_product_id:form.cardmarket_product_id||null,cardmarket_name:form.cardmarket_name||null,cardmarket_expansion:form.cardmarket_expansion||null,cardmarket_language:form.cardmarket_language||null,cardmarket_url:form.cardmarket_url||null};
   if(editing){
    const {error:ce}=await supabase.from("cards").update(cardPayload).eq("id",editing.cards.id);
    if(ce){setMsg(ce.message);setBusy(false);return}
@@ -102,7 +102,7 @@ function Admin({session,publicSite}){
  function openEdit(row){
   const c=row.cards||{};
   setEditing(row);
-  setForm({name:c.name||"",set_name:c.set_name||"",set_code:c.set_code||"",set_id:c.set_id||"",set_symbol_url:c.set_symbol_url||"",card_number:c.card_number||"",language:c.language||"English",variant:c.variant||"Normal",rarity:c.rarity||"",quantity:row.quantity||1,condition:row.condition||"NM",cost_per_card:row.cost_per_card||"0",status:row.status||"available",location_id:row.location_id||""});
+  setForm({name:c.name||"",english_name:c.english_name||c.name||"",set_name:c.set_name||"",set_code:c.set_code||"",set_id:c.set_id||"",set_symbol_url:c.set_symbol_url||"",card_number:c.card_number||"",language:c.language||"English",variant:c.variant||"Normal",rarity:c.rarity||"",quantity:row.quantity||1,condition:row.condition||"NM",cost_per_card:row.cost_per_card||"0",status:row.status||"available",location_id:row.location_id||"",cardmarket_product_id:c.cardmarket_product_id||"",cardmarket_name:c.cardmarket_name||"",cardmarket_expansion:c.cardmarket_expansion||"",cardmarket_language:c.cardmarket_language||"",cardmarket_url:c.cardmarket_url||""});
   setSetSearchValue(c.set_name||"");setMsg("");setShowForm(true)
  }
  function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearchValue("");setMsg("")}
@@ -111,10 +111,10 @@ function Admin({session,publicSite}){
 
  if(!session)return <div className="login"><button className="back" onClick={publicSite}>← Public catalogue</button><div className="loginbox"><strong className="mark">PP</strong><span className="eyebrow">PRIVATE AREA</span><h1>Admin login</h1><p>Manage your Pokémon TCG business.</p><form onSubmit={login}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{msg&&<div className="alert">{msg}</div>}<button disabled={busy}>{busy?"Signing in…":"Sign in"}</button></form></div></div>;
 
- return <div className="admin"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":"Locations"}</button>)}</nav>
+ return <div className="admin"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","cardmarket","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":t==="cardmarket"?"Cardmarket":"Locations"}</button>)}</nav>
  {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market pricing</small><b>Coming next</b></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection and editing are now live. Next we'll expand batch import, scanning, Cardmarket pricing, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
- {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>}
+ {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={sets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
@@ -317,10 +317,44 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      <label>Rarity<input value={form.rarity||""} onChange={e=>set("rarity",e.target.value)}/></label>
     </div>
     <label>Storage location<select value={form.location_id||""} onChange={e=>set("location_id",e.target.value)}><option value="">No location yet</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+    <div className="panel" style={{marginTop:12}}>
+     <span className="eyebrow">CARDMARKET MATCH</span>
+     <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center"}}><div><b>{form.cardmarket_product_id?`Matched · Product ${form.cardmarket_product_id}`:"Not matched yet"}</b><small style={{display:"block",marginTop:3}}>{form.cardmarket_name||"Match the exact Cardmarket product before pricing is imported."}</small></div><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
+     <div className="two" style={{marginTop:10}}>
+      <label>Product ID<input value={form.cardmarket_product_id||""} onChange={e=>set("cardmarket_product_id",e.target.value.trim())} placeholder="e.g. 123456"/></label>
+      <label>Cardmarket name<input value={form.cardmarket_name||""} onChange={e=>set("cardmarket_name",e.target.value)} placeholder="Exact product name"/></label>
+      <label>Expansion<input value={form.cardmarket_expansion||""} onChange={e=>set("cardmarket_expansion",e.target.value)} placeholder="Cardmarket expansion"/></label>
+      <label>Language<input value={form.cardmarket_language||""} onChange={e=>set("cardmarket_language",e.target.value)} placeholder="English / Japanese / etc."/></label>
+      <label>Product URL<input value={form.cardmarket_url||""} onChange={e=>set("cardmarket_url",e.target.value)} placeholder="Exact product URL"/></label>
+     </div>
+    </div>
     {msg&&<div className="alert">{msg}</div>}
     <div className="modalactions"><button type="button" className="ghost" onClick={close}>Cancel</button><button type="submit" disabled={busy}>{busy?(editing?"Saving…":"Adding…"):(editing?"Save changes":"Add to inventory")}</button></div>
    </form>
   </div>
+ </div>
+}
+function CardmarketMatcher({inventory,onDone}){
+ const [q,setQ]=useState(""),[selected,setSelected]=useState(null),[form,setForm]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");
+ const rows=inventory.filter(r=>{const c=r.cards||{},x=q.toLowerCase().trim();return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id].filter(Boolean).join(" ").toLowerCase().includes(x)});
+ function open(r){const c=r.cards||{};setSelected(r);setForm({cardmarket_product_id:c.cardmarket_product_id||"",cardmarket_name:c.cardmarket_name||"",cardmarket_expansion:c.cardmarket_expansion||"",cardmarket_language:c.cardmarket_language||c.language||"",cardmarket_url:c.cardmarket_url||""});setMsg("")}
+ async function save(){if(!selected||!form)return;setBusy(true);setMsg("");const {error}=await supabase.from("cards").update({cardmarket_product_id:form.cardmarket_product_id||null,cardmarket_name:form.cardmarket_name||null,cardmarket_expansion:form.cardmarket_expansion||null,cardmarket_language:form.cardmarket_language||null,cardmarket_url:form.cardmarket_url||null}).eq("id",selected.cards.id);if(error)setMsg(error.message);else{setMsg("Cardmarket match saved.");setSelected(null);setForm(null);await onDone?.()}setBusy(false)}
+ return <div className="panel">
+  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Match each card to the exact Cardmarket product before prices are imported.</p></div></div>
+  <div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search Pokémon, set, number or language..."/><small>{rows.filter(r=>r.cards?.cardmarket_product_id).length}/{rows.length} shown cards matched</small></div>
+  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>open(r)}>Match</button></div></div>)}</div>
+  {selected&&form&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setForm(null)}}}><div className="modal" onMouseDown={e=>e.stopPropagation()}>
+   <div className="modalhead"><div><span className="eyebrow">CARDMARKET PRODUCT</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setForm(null)}}>×</button></div>
+   <p>Use the exact language-specific Cardmarket product. Japanese and other Asian-language Pokémon cards have separate catalogue products.</p>
+   <a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Pokémon Singles on Cardmarket</a>
+   <label>Product ID<input value={form.cardmarket_product_id} onChange={e=>setForm(f=>({...f,cardmarket_product_id:e.target.value}))} placeholder="Product ID"/></label>
+   <label>Exact product name<input value={form.cardmarket_name} onChange={e=>setForm(f=>({...f,cardmarket_name:e.target.value}))}/></label>
+   <label>Expansion<input value={form.cardmarket_expansion} onChange={e=>setForm(f=>({...f,cardmarket_expansion:e.target.value}))}/></label>
+   <label>Cardmarket language<input value={form.cardmarket_language} onChange={e=>setForm(f=>({...f,cardmarket_language:e.target.value}))}/></label>
+   <label>Exact product URL<input value={form.cardmarket_url} onChange={e=>setForm(f=>({...f,cardmarket_url:e.target.value}))}/></label>
+   {msg&&<div className="alert">{msg}</div>}
+   <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setForm(null)}}>Cancel</button><button onClick={save} disabled={busy}>{busy?"Saving…":"Save match"}</button></div>
+  </div></div>}
  </div>
 }
 function BatchTool({inventory,onDone}){
