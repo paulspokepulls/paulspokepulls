@@ -76,7 +76,7 @@ function Admin({session,publicSite}){
   const c=row.cards||{};
   setEditing(row);
   setForm({name:c.name||"",set_name:c.set_name||"",set_code:c.set_code||"",set_id:c.set_id||"",set_symbol_url:c.set_symbol_url||"",card_number:c.card_number||"",language:c.language||"English",variant:c.variant||"Normal",rarity:c.rarity||"",quantity:row.quantity||1,condition:row.condition||"NM",cost_per_card:row.cost_per_card||"0",status:row.status||"available",location_id:row.location_id||""});
-  setSetSearchValue(c.name||"");setMsg("");setShowForm(true)
+  setSetSearchValue(c.set_name||"");setMsg("");setShowForm(true)
  }
  function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearchValue("");setMsg("")}
  const filtered=useMemo(()=>{const x=q.toLowerCase().trim();return inv.filter(r=>!x||[r.cards?.name,r.cards?.set_name,r.cards?.card_number,r.cards?.language,r.cards?.variant,r.cards?.set_code].filter(Boolean).join(" ").toLowerCase().includes(x))},[inv,q]);
@@ -89,7 +89,7 @@ function Admin({session,publicSite}){
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)}>Edit</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
- </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearch} setSearchValue={setSetSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
+ </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
 function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing,busy,msg,close,submit}){
@@ -103,11 +103,11 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  const filteredSets=useMemo(()=>{
    const q=(setSearchValue||"").toLowerCase().trim();
    return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
- },[sets,setSearch]);
+ },[sets,setSearchValue]);
 
  function chooseSet(x){
    setForm(f=>({...f,set_id:x.id||"",set_code:x.id||"",set_name:x.name||"",set_symbol_url:x.symbol||""}));
-   setSetSearchValue(x.name||"");
+   setSearch(x.name||"");
    setSetOpen(false);
    setCardQuery("");
    setCards([]);
