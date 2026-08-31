@@ -3,6 +3,7 @@ import {createRoot} from "react-dom/client";
 import {createClient} from "@supabase/supabase-js";
 import "./styles.css";
 
+
 const url=import.meta.env.VITE_SUPABASE_URL;
 const key=import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const supabase=url&&key?createClient(url,key):null;
