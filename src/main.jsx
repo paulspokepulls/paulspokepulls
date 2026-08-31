@@ -103,7 +103,7 @@ function Admin({session,publicSite}){
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
-function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close,submit}){
+function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing,busy,msg,close,submit}){
  const [setOpen,setSetOpen]=useState(false);
  const [cardOpen,setCardOpen]=useState(false);
  const [cardQuery,setCardQuery]=useState(form.card_number||"");
@@ -112,9 +112,9 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
 
  const filteredSets=useMemo(()=>{
-   const q=(setSearch||"").toLowerCase().trim();
+   const q=(setSearchValue||"").toLowerCase().trim();
    return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
- },[sets,setSearch]);
+ },[sets,setSearchValue]);
 
  function chooseSet(x){
    setForm(f=>({...f,set_id:x.id||"",set_code:x.id||"",set_name:x.name||"",set_symbol_url:x.symbol||""}));
@@ -167,7 +167,7 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
    <form onSubmit={submit}>
     <div className="autocomplete">
      <label>Set</label>
-     <input value={setSearch||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
+     <input value={setSearchValue||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
      {setOpen&&<div className="suggestions">
       {filteredSets.map(x=><button type="button" className="suggestion" key={x.id} onClick={()=>chooseSet(x)}>
        {x.symbol?<img src={x.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}
