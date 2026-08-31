@@ -116,6 +116,35 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  const [setBusy,setSetBusy]=useState(false);
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
  const apiLang=TCG_LANGS[form.language]||"en";
+ const [englishCards,setEnglishCards]=useState([]);
+ const [englishCardBusy,setEnglishCardBusy]=useState(false);
+
+ async function getEnglishCardName(card){
+   // The multilingual card endpoint is used for identification, but the
+   // catalogue's canonical Pokémon name is English.
+   if(apiLang==="en")return card?.name||"";
+   try{
+     const id=card?.id||"";
+     const localId=card?.localId||"";
+     const setId=card?.set?.id||form.set_id||"";
+     if(id){
+       const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(id)}`);
+       if(r.ok){
+         const en=await r.json();
+         if(en?.name)return en.name;
+       }
+     }
+     if(setId&&localId){
+       const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(setId)}`);
+       if(r.ok){
+         const setData=await r.json();
+         const hit=(setData.cards||[]).find(c=>String(c.localId)===String(localId));
+         if(hit?.name)return hit.name;
+       }
+     }
+   }catch(e){}
+   return card?.name||"";
+ }
 
  useEffect(()=>{setLanguageSets(sets||[])},[sets]);
 
@@ -182,7 +211,24 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      if(!r.ok)throw new Error("card lookup failed");
      const data=await r.json();
      const q=value.toLowerCase().trim();
-     setCards((data.cards||[]).filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20));
+     const langCards=data.cards||[];
+     if(apiLang==="en"){
+       setCards(langCards.filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20));
+     }else{
+       setEnglishCardBusy(true);
+       const englishSetId=form.set_id;
+       let enCards=[];
+       try{
+         const er=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(englishSetId)}`);
+         if(er.ok){const ed=await er.json();enCards=ed.cards||[]}
+       }catch(e){}
+       const merged=langCards.map(c=>{
+         const en=enCards.find(ec=>String(ec.localId)===String(c.localId));
+         return {...c,englishName:en?.name||""};
+       });
+       setCards(merged.filter(c=>`${c.localId||""} ${c.name||""} ${c.englishName||""}`.toLowerCase().includes(q)).slice(0,20));
+       setEnglishCardBusy(false);
+     }
    }catch(e){setCards([])}
    finally{setCardBusy(false)}
  }
@@ -193,8 +239,9 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/cards/${encodeURIComponent(c.id)}`);
      if(r.ok)full=await r.json();
    }catch(e){}
+   const englishName=await getEnglishCardName(full);
    setForm(f=>({...f,
-     name:full.name||f.name,
+     name:englishName||full.name||f.name,
      card_number:full.localId||f.card_number,
      rarity:full.rarity||f.rarity,
      set_id:full.set?.id||f.set_id,
@@ -244,7 +291,7 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
       {cardBusy&&<div className="noresults">Searching {form.language||"English"} cards…</div>}
       {!cardBusy&&cards.map(c=><button type="button" className="suggestion" key={c.id} onClick={()=>chooseCard(c)}>
        {c.image?<img className="cardthumb" src={c.image} alt=""/>:null}
-       <span><b>#{c.localId} {c.name}</b><small>{c.rarity||"Card"}</small></span>
+       <span><b>#{c.localId} {c.englishName||c.name}</b><small>{c.englishName&&c.englishName!==c.name?`${c.name} · ${c.rarity||"Card"}`:(c.rarity||"Card")}</small></span>
       </button>)}
       {!cardBusy&&!cards.length&&<div className="noresults">No matching card. You can enter it manually below.</div>}
      </div>}
