@@ -100,13 +100,13 @@ function Admin({session,publicSite}){
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
- </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
+ </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={sets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
 const TCG_LANGS={English:"en",Japanese:"ja",Chinese:"zh-tw",Korean:"ko",German:"de",French:"fr",Spanish:"es",Portuguese:"pt",Polish:"pl",Russian:"ru",Italian:"it",Indonesian:"id",Thai:"th"};
 const TCG_LANGUAGE_OPTIONS=Object.keys(TCG_LANGS);
 
-function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close,submit}){
+function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing,busy,msg,close,submit}){
  const [setOpen,setSetOpen]=useState(false);
  const [cardOpen,setCardOpen]=useState(false);
  const [cardQuery,setCardQuery]=useState(form.card_number||"");
@@ -140,9 +140,9 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
  },[form.language]);
 
  const filteredSets=useMemo(()=>{
-   const q=(setSearch||"").toLowerCase().trim();
+   const q=(setSearchValue||"").toLowerCase().trim();
    return (q?languageSets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):languageSets).slice(0,30);
- },[languageSets,setSearch]);
+ },[languageSets,setSearchValue]);
 
  async function chooseSet(x){
    setSetOpen(false);
@@ -221,7 +221,7 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
 
     <div className="autocomplete">
      <label>Set name or set ID</label>
-     <input value={setSearch||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true)}} placeholder={form.language==="Japanese"?"e.g. sv1V or バイオレットex":"Search set name or code — e.g. Jungle, sv06"}/>
+     <input value={setSearchValue||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true)}} placeholder={form.language==="Japanese"?"e.g. sv1V or バイオレットex":"Search set name or code — e.g. Jungle, sv06"}/>
      {setOpen&&<div className="suggestions">
       {setBusy&&<div className="noresults">Loading {form.language||"English"} sets…</div>}
       {!setBusy&&filteredSets.map(x=><button type="button" className="suggestion" key={`${x.id}-${x.name}`} onClick={()=>chooseSet(x)}>
