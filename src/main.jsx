@@ -71,14 +71,14 @@ function Admin({session,publicSite}){
   }
   setBusy(false)
  }
- function openAdd(){setEditing(null);setForm(blank);setMsg("");setShowForm(true)}
+ function openAdd(){setEditing(null);setForm(blank);setSetSearch("");setMsg("");setShowForm(true)}
  function openEdit(row){
   const c=row.cards||{};
   setEditing(row);
   setForm({name:c.name||"",set_name:c.set_name||"",set_code:c.set_code||"",set_id:c.set_id||"",set_symbol_url:c.set_symbol_url||"",card_number:c.card_number||"",language:c.language||"English",variant:c.variant||"Normal",rarity:c.rarity||"",quantity:row.quantity||1,condition:row.condition||"NM",cost_per_card:row.cost_per_card||"0",status:row.status||"available",location_id:row.location_id||""});
-  setMsg("");setShowForm(true)
+  setSetSearch(c.name||"");setMsg("");setShowForm(true)
  }
- function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setMsg("")}
+ function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearch("");setMsg("")}
  const filtered=useMemo(()=>{const x=q.toLowerCase().trim();return inv.filter(r=>!x||[r.cards?.name,r.cards?.set_name,r.cards?.card_number,r.cards?.language,r.cards?.variant,r.cards?.set_code].filter(Boolean).join(" ").toLowerCase().includes(x))},[inv,q]);
  const filteredSets=useMemo(()=>{const x=setSearch.toLowerCase().trim();return (x?sets.filter(s=>`${s.name} ${s.id}`.toLowerCase().includes(x)):sets).slice(0,200)},[sets,setSearch]);
 
@@ -93,15 +93,112 @@ function Admin({session,publicSite}){
 }
 
 function CardModal({form,setForm,locations,sets,setSearch,setTotal,editing,busy,msg,close,submit}){
+ const [cardQuery,setCardQuery]=useState(form.card_number||"");
+ const [cardChoices,setCardChoices]=useState([]);
+ const [cardBusy,setCardBusy]=useState(false);
+ const [setOpen,setSetOpen]=useState(false);
+ const [cardOpen,setCardOpen]=useState(false);
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
- function chooseSet(id){
-  const s=sets.find(x=>x.id===id);
-  if(!s)return;
-  setForm(f=>({...f,set_id:s.id,set_code:s.id,set_name:s.name,set_symbol_url:s.symbol||""}));
- }
- return <div className="modal-backdrop"><div className="modal"><div className="modalhead"><div><span className="eyebrow">{editing?"EDIT INVENTORY":"NEW STOCK"}</span><h2>{editing?"Edit card":"Add card"}</h2></div><button className="x" onClick={close}>×</button></div><form onSubmit={submit}><label>Set search<input value={form.set_id?`${form.set_name} (${form.set_code})`:setSearch} onChange={e=>{setSearch(e.target.value);if(form.set_id)set("set_id","")}} placeholder="Type Jungle, Base, Neo, Scarlet..." /></label><label>Set<select value={form.set_id||""} onChange={e=>chooseSet(e.target.value)} size="7"><option value="">Choose a set…</option>{sets.map(s=><option value={s.id} key={s.id}>{s.name} · {s.id}</option>)}</select></label>{form.set_symbol_url&&<div className="setpreview"><img src={form.set_symbol_url} alt="Set symbol"/><span>{form.set_name} · {form.set_code}</span></div>}<div className="two"><label>Card name<input required value={form.name} onChange={e=>set("name",e.target.value)}/></label><label>Card number<input value={form.card_number} onChange={e=>set("card_number",e.target.value)}/></label><label>Language<select value={form.language} onChange={e=>set("language",e.target.value)}>{["English","Japanese","German","French","Spanish","Portuguese","Korean","Chinese","Polish","Russian","Other"].map(x=><option key={x}>{x}</option>)}</select></label><label>Variant<input value={form.variant} onChange={e=>set("variant",e.target.value)}/></label><label>Condition<input value={form.condition} onChange={e=>set("condition",e.target.value)}/></label><label>Quantity<input type="number" min="1" value={form.quantity} onChange={e=>set("quantity",e.target.value)}/></label><label>Cost / card (£)<input type="number" step="0.0001" min="0" value={form.cost_per_card} onChange={e=>set("cost_per_card",e.target.value)}/></label><label>Rarity<input value={form.rarity} onChange={e=>set("rarity",e.target.value)}/></label></div><label>Storage location<select value={form.location_id} onChange={e=>set("location_id",e.target.value)}><option value="">No location yet</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>{msg&&<div className="alert">{msg}</div>}<div className="modalactions"><button type="button" className="ghost" onClick={close}>Cancel</button><button disabled={busy}>{busy?(editing?"Saving…":"Adding…"):(editing?"Save changes":"Add to inventory")}</button></div></form></div></div>
-}
 
+ const filteredSets=useMemo(()=>{
+   const x=setSearch.toLowerCase().trim();
+   if(!x) return sets.slice(0,20);
+   return sets.filter(s=>`${s.name} ${s.id}`.toLowerCase().includes(x)).slice(0,20);
+ },[sets,setSearch]);
+
+ async function chooseSet(setObj){
+   setForm(f=>({...f,set_id:setObj.id,set_code:setObj.id,set_name:setObj.name,set_symbol_url:setObj.symbol||""}));
+   setSearch(setObj.name);
+   setSetOpen(false);
+   setCardQuery("");
+   setCardChoices([]);
+ }
+
+ async function findCards(v){
+   setCardQuery(v);
+   set("card_number",v);
+   if(!form.set_id || !v.trim()){setCardChoices([]);return}
+   setCardBusy(true);
+   try{
+     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}/${encodeURIComponent(v.trim())}`);
+     if(r.ok){
+       const c=await r.json();
+       setCardChoices([c]);
+     }else{
+       const r2=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}`);
+       if(r2.ok){
+         const setData=await r2.json();
+         const q=v.toLowerCase().trim();
+         const choices=(setData.cards||[]).filter(c=>`${c.localId} ${c.name}`.toLowerCase().includes(q)).slice(0,20);
+         setCardChoices(choices);
+       }else setCardChoices([]);
+     }
+   }catch(e){setCardChoices([])}
+   setCardBusy(false);
+ }
+
+ async function chooseCard(c){
+   let full=c;
+   if(!c.rarity || !c.set){
+     try{
+       const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(c.id)}`);
+       if(r.ok) full=await r.json();
+     }catch(e){}
+   }
+   setForm(f=>({...f,
+     name:full.name||f.name,
+     card_number:full.localId||f.card_number,
+     rarity:full.rarity||f.rarity,
+     set_id:full.set?.id||f.set_id,
+     set_code:full.set?.id||f.set_code,
+     set_name:full.set?.name||f.set_name,
+     set_symbol_url:full.set?.symbol||f.set_symbol_url
+   }));
+   setCardQuery(full.localId||full.name||"");
+   setCardChoices([]);
+   setCardOpen(false);
+ }
+
+ return <div className="modal-backdrop"><div className="modal"><div className="modalhead"><div><span className="eyebrow">{editing?"EDIT INVENTORY":"NEW STOCK"}</span><h2>{editing?"Edit card":"Add card"}</h2></div><button className="x" onClick={close}>×</button></div><form onSubmit={submit}>
+   <div className="autocomplete">
+     <label>Set</label>
+     <input value={setSearch} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);set("set_id","");set("set_name","");set("set_code","");set("set_symbol_url","");setSetOpen(true)}} placeholder="Search sets — e.g. Jungle, Neo Genesis, Base"/>
+     {setOpen&&<div className="suggestions">
+       {filteredSets.map(s=><button type="button" className="suggestion" key={s.id} onMouseDown={e=>e.preventDefault()} onClick={()=>chooseSet(s)}>
+         {s.symbol?<img src={s.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}
+         <span><b>{s.name}</b><small>{s.id} · {s.cardCount?.official||s.cardCount?.total||"?"} cards</small></span>
+       </button>)}
+       {!filteredSets.length&&<div className="noresults">No matching sets.</div>}
+     </div>}
+   </div>
+   {form.set_id&&<div className="setpreview"><img src={form.set_symbol_url||""} alt="" onError={e=>e.currentTarget.style.display="none"}/><span><b>{form.set_name}</b><small>{form.set_code}</small></span></div>}
+   <div className="autocomplete">
+     <label>Card number / Pokémon</label>
+     <input value={cardQuery} onFocus={()=>setCardOpen(true)} onChange={e=>{setCardOpen(true);findCards(e.target.value)}} placeholder={form.set_id?"e.g. 111 or Bidoof":"Select a set first"} disabled={!form.set_id}/>
+     {cardOpen&&form.set_id&&cardQuery.trim()&&<div className="suggestions">
+       {cardBusy&&<div className="noresults">Searching cards…</div>}
+       {!cardBusy&&cardChoices.map(c=><button type="button" className="suggestion" key={c.id||c.localId} onMouseDown={e=>e.preventDefault()} onClick={()=>chooseCard(c)}>
+         {c.image?<img className="cardthumb" src={c.image} alt=""/>:null}
+         <span><b>#{c.localId} {c.name}</b><small>{c.rarity||"Card"}</small></span>
+       </button>)}
+       {!cardBusy&&!cardChoices.length&&<div className="noresults">No card found — you can still enter the details manually.</div>}
+     </div>}
+   </div>
+   <div className="two">
+     <label>Card name<input required value={form.name} onChange={e=>set("name",e.target.value)}/></label>
+     <label>Card number<input value={form.card_number} onChange={e=>set("card_number",e.target.value)}/></label>
+     <label>Language<select value={form.language} onChange={e=>set("language",e.target.value)}>{["English","Japanese","German","French","Spanish","Portuguese","Korean","Chinese","Polish","Russian","Other"].map(x=><option key={x}>{x}</option>)}</select></label>
+     <label>Variant<input value={form.variant} onChange={e=>set("variant",e.target.value)}/></label>
+     <label>Condition<input value={form.condition} onChange={e=>set("condition",e.target.value)}/></label>
+     <label>Quantity<input type="number" min="1" value={form.quantity} onChange={e=>set("quantity",e.target.value)}/></label>
+     <label>Cost / card (£)<input type="number" step="0.0001" min="0" value={form.cost_per_card} onChange={e=>set("cost_per_card",e.target.value)}/></label>
+     <label>Rarity<input value={form.rarity} onChange={e=>set("rarity",e.target.value)}/></label>
+   </div>
+   <label>Storage location<select value={form.location_id} onChange={e=>set("location_id",e.target.value)}><option value="">No location yet</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+   {msg&&<div className="alert">{msg}</div>}
+   <div className="modalactions"><button type="button" className="ghost" onClick={close}>Cancel</button><button disabled={busy}>{busy?(editing?"Saving…":"Adding…"):(editing?"Save changes":"Add to inventory")}</button></div>
+ </form></div></div>
+}
 function BatchTool({inventory,onDone}){
  const [text,setText]=useState(""),[result,setResult]=useState(null),[busy,setBusy]=useState(false);
  function parse(){const rows=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split(",").map(x=>x.trim());return {name:p[0]||"",set_name:p[1]||"",card_number:p[2]||"",quantity:Number(p[3]||1)}});let matched=0,unmatched=[];rows.forEach(r=>{const hit=inventory.find(i=>i.cards?.name?.toLowerCase()===r.name.toLowerCase()&&i.cards?.set_name?.toLowerCase()===r.set_name.toLowerCase()&&String(i.cards?.card_number||"").toLowerCase()===r.card_number.toLowerCase());if(hit)matched++;else unmatched.push(r)});setResult({rows,matched,unmatched})}

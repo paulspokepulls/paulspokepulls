@@ -1,9 +1,12 @@
-# Paul's Poke Pulls V3
+# Paul's Poke Pulls V4
 
-Adds a searchable Pokémon TCG set selector, set IDs/symbols, and editable inventory records.
+V4 replaces the native set dropdown with a local autocomplete and adds card lookup after a set is selected.
 
-1. Run `supabase_v3_migration.sql` once in Supabase SQL Editor.
-2. Replace the repository files with this V3 project.
-3. Commit to `main` and let GitHub Actions deploy.
+- Search sets instantly from the loaded TCGdex set list.
+- Shows the set symbol in the suggestions and selected-set preview.
+- Select a set, then search by card number or Pokémon name.
+- Selecting a card auto-fills name, number, rarity, set and symbol.
+- Manual edits remain possible.
+- Existing inventory editing, locations, batch tools and public catalogue remain.
 
-The set selector uses the TCGdex REST API, which provides set names, IDs and symbols.
+Run the existing V3 Supabase migration once if it has not already been run.
