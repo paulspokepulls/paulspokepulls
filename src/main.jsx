@@ -71,6 +71,17 @@ function Admin({session,publicSite}){
   }
   setBusy(false)
  }
+ async function deleteCard(row){
+  if(!row?.id)return;
+  const label=`${row.cards?.name||"this card"}${row.cards?.set_name?` — ${row.cards.set_name}`:""}`;
+  if(!window.confirm(`Delete ${label} from your inventory? This cannot be undone.`))return;
+  setBusy(true);setMsg("");
+  const {error}=await supabase.from("inventory").delete().eq("id",row.id);
+  if(error){setMsg(error.message);setBusy(false);return}
+  await load();
+  setMsg("Inventory row deleted.");
+  setBusy(false);
+ }
  function openAdd(){setEditing(null);setForm(blank);setSetSearchValue("");setMsg("");setShowForm(true)}
  function openEdit(row){
   const c=row.cards||{};
@@ -86,7 +97,7 @@ function Admin({session,publicSite}){
 
  return <div className="admin"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":"Locations"}</button>)}</nav>
  {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market pricing</small><b>Coming next</b></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection and editing are now live. Next we'll expand batch import, scanning, Cardmarket pricing, sales, ACE grading and accounting.</p></div></>}
- {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)}>Edit</button></div></div>)}</div></div></>}
+ {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
