@@ -35,7 +35,7 @@ function Public({admin}){
 
 function Admin({session,publicSite}){
  const [email,setEmail]=useState(""),[password,setPassword]=useState(""),[msg,setMsg]=useState(""),[tab,setTab]=useState("dashboard");
- const [inv,setInv]=useState([]),[locations,setLocations]=useState([]),[sets,setSets]=useState([]),[setSearch,setSetSearch]=useState("");
+ const [inv,setInv]=useState([]),[locations,setLocations]=useState([]),[sets,setSets]=useState([]),[setSearchValue,setSetSearchValue]=useState("");
  const [q,setQ]=useState(""),[busy,setBusy]=useState(false),[form,setForm]=useState(blank),[editing,setEditing]=useState(null),[showForm,setShowForm]=useState(false);
 
  async function login(e){e.preventDefault();setBusy(true);setMsg("");if(!supabase){setMsg("Supabase is not connected.");setBusy(false);return}const {error}=await supabase.auth.signInWithPassword({email,password});if(error)setMsg(error.message);setBusy(false)}
@@ -80,7 +80,7 @@ function Admin({session,publicSite}){
  }
  function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearch("");setMsg("")}
  const filtered=useMemo(()=>{const x=q.toLowerCase().trim();return inv.filter(r=>!x||[r.cards?.name,r.cards?.set_name,r.cards?.card_number,r.cards?.language,r.cards?.variant,r.cards?.set_code].filter(Boolean).join(" ").toLowerCase().includes(x))},[inv,q]);
- const filteredSets=useMemo(()=>{const x=setSearch.toLowerCase().trim();return (x?sets.filter(s=>`${s.name} ${s.id}`.toLowerCase().includes(x)):sets).slice(0,200)},[sets,setSearch]);
+ const filteredSets=useMemo(()=>{const x=(setSearchValue||"").toLowerCase().trim();return (x?sets.filter(s=>`${s.name||""} ${s.id||""}`.toLowerCase().includes(x)):sets).slice(0,200)},[sets,setSearchValue]);
 
  if(!session)return <div className="login"><button className="back" onClick={publicSite}>← Public catalogue</button><div className="loginbox"><strong className="mark">PP</strong><span className="eyebrow">PRIVATE AREA</span><h1>Admin login</h1><p>Manage your Pokémon TCG business.</p><form onSubmit={login}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{msg&&<div className="alert">{msg}</div>}<button disabled={busy}>{busy?"Signing in…":"Sign in"}</button></form></div></div>;
 
@@ -89,10 +89,10 @@ function Admin({session,publicSite}){
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)}>Edit</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
- </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearch} setTotal={sets.length} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
+ </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearch} setSearchValue={setSetSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
-function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close,submit}){
+function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing,busy,msg,close,submit}){
  const [setOpen,setSetOpen]=useState(false);
  const [cardOpen,setCardOpen]=useState(false);
  const [cardQuery,setCardQuery]=useState(form.card_number||"");
@@ -101,7 +101,7 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
 
  const filteredSets=useMemo(()=>{
-   const q=(setSearch||"").toLowerCase().trim();
+   const q=(setSearchValue||"").toLowerCase().trim();
    return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
  },[sets,setSearch]);
 
@@ -155,7 +155,7 @@ function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close
     <form onSubmit={submit}>
       <div className="autocomplete">
        <label>Set</label>
-       <input value={setSearch||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
+       <input value={setSearchValue||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
        {setOpen&&<div className="suggestions" onMouseLeave={()=>{}}>
         {filteredSets.map(x=><button type="button" className="suggestion" key={x.id} onClick={()=>chooseSet(x)}>
           {x.symbol?<img src={x.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}

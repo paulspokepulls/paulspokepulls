@@ -1,3 +1,3 @@
-# Paul's Poke Pulls V5
+# Paul's Poke Pulls V6
 
-Defensive rebuild of the Add/Edit card modal. Set and card lookup failures no longer crash the page; manual entry remains available. TCGdex set/card data supplies set symbols and card metadata.
+Fixes the V5 blank-page runtime error caused by confusing the set-search setter with the current search value. The Add/Edit modal now receives both separately.
