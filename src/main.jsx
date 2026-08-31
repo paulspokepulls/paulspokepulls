@@ -71,14 +71,14 @@ function Admin({session,publicSite}){
   }
   setBusy(false)
  }
- function openAdd(){setEditing(null);setForm(blank);setSetSearch("");setMsg("");setShowForm(true)}
+ function openAdd(){setEditing(null);setForm(blank);setSetSearchValue("");setMsg("");setShowForm(true)}
  function openEdit(row){
   const c=row.cards||{};
   setEditing(row);
   setForm({name:c.name||"",set_name:c.set_name||"",set_code:c.set_code||"",set_id:c.set_id||"",set_symbol_url:c.set_symbol_url||"",card_number:c.card_number||"",language:c.language||"English",variant:c.variant||"Normal",rarity:c.rarity||"",quantity:row.quantity||1,condition:row.condition||"NM",cost_per_card:row.cost_per_card||"0",status:row.status||"available",location_id:row.location_id||""});
-  setSetSearch(c.name||"");setMsg("");setShowForm(true)
+  setSetSearchValue(c.name||"");setMsg("");setShowForm(true)
  }
- function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearch("");setMsg("")}
+ function closeForm(){setShowForm(false);setEditing(null);setForm(blank);setSetSearchValue("");setMsg("")}
  const filtered=useMemo(()=>{const x=q.toLowerCase().trim();return inv.filter(r=>!x||[r.cards?.name,r.cards?.set_name,r.cards?.card_number,r.cards?.language,r.cards?.variant,r.cards?.set_code].filter(Boolean).join(" ").toLowerCase().includes(x))},[inv,q]);
  const filteredSets=useMemo(()=>{const x=(setSearchValue||"").toLowerCase().trim();return (x?sets.filter(s=>`${s.name||""} ${s.id||""}`.toLowerCase().includes(x)):sets).slice(0,200)},[sets,setSearchValue]);
 
@@ -107,7 +107,7 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
 
  function chooseSet(x){
    setForm(f=>({...f,set_id:x.id||"",set_code:x.id||"",set_name:x.name||"",set_symbol_url:x.symbol||""}));
-   setSearch(x.name||"");
+   setSetSearchValue(x.name||"");
    setSetOpen(false);
    setCardQuery("");
    setCards([]);

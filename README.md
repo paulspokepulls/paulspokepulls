@@ -1,3 +1,4 @@
-# Paul's Poke Pulls V6
+# Paul's Poke Pulls V7
 
-Fixes the V5 blank-page runtime error caused by confusing the set-search setter with the current search value. The Add/Edit modal now receives both separately.
+Fixes the V6 runtime error `ReferenceError: setSetSearch is not defined`.
+The set autocomplete now consistently uses the Admin set-search state setter.
