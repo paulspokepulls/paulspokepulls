@@ -17,20 +17,36 @@ function App(){
 }
 
 function Public({admin}){
- const [q,setQ]=useState(""),[cards,setCards]=useState([]),[busy,setBusy]=useState(false),[err,setErr]=useState("");
+ const [q,setQ]=useState(""),[cards,setCards]=useState([]),[busy,setBusy]=useState(false),[err,setErr]=useState(""); const [filters,setFilters]=useState({language:"",set:"",rarity:"",sort:"name"}),[showFilters,setShowFilters]=useState(false);
  async function search(v=q){
   setBusy(true);setErr("");
   if(!supabase){setCards(demo);setBusy(false);return}
-  const {data,error}=await supabase.from("inventory").select("id,quantity,status,cards(id,name,english_name,set_name,card_number,language,variant,image_url,set_symbol_url)").in("status",["available","listed"]).gt("quantity",0).order("created_at",{ascending:false});
+  const {data,error}=await supabase.from("inventory").select("id,quantity,status,cards(id,name,english_name,set_name,card_number,language,variant,rarity,image_url,set_symbol_url)").in("status",["available","listed"]).gt("quantity",0).order("created_at",{ascending:false});
   if(error){setErr(error.message);setCards([])}else{
    let a=(data||[]).map(r=>{const c={...r,...(r.cards||{})};return {...c,display_name:(c.english_name||c.name||"").trim()}});
-   if(v.trim())a=a.filter(c=>[c.display_name,c.name,c.set_name,c.card_number,c.language,c.variant].filter(Boolean).join(" ").toLowerCase().includes(v.toLowerCase()));
+   if(v.trim())a=a.filter(c=>[c.display_name,c.name,c.set_name,c.card_number,c.language,c.variant,c.set_code].filter(Boolean).join(" ").toLowerCase().includes(v.toLowerCase()));
+   if(filters.language)a=a.filter(c=>c.language===filters.language);
+   if(filters.set)a=a.filter(c=>c.set_name===filters.set);
+   if(filters.rarity)a=a.filter(c=>(c.rarity||"")===filters.rarity);
+   if(filters.sort==="name")a.sort((x,y)=>(x.display_name||"").localeCompare(y.display_name||""));
+   if(filters.sort==="set")a.sort((x,y)=>(x.set_name||"").localeCompare(y.set_name||"")||(x.card_number||"").localeCompare(y.card_number||"",undefined,{numeric:true}));
+   if(filters.sort==="number")a.sort((x,y)=>(x.card_number||"").localeCompare(y.card_number||"",undefined,{numeric:true}));
+   if(filters.sort==="quantity")a.sort((x,y)=>Number(y.quantity||0)-Number(x.quantity||0));
    setCards(a);
   }
   setBusy(false);
  }
- useEffect(()=>{search("")},[]);
- return <div className="shell"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Pokémon TCG Business</small></div></div><button className="ghost" onClick={admin}>Admin</button></header><main className="main"><section className="hero"><span className="eyebrow">PAUL'S POKE PULLS</span><h1>Find a card.</h1><p>Search the catalogue to see what's currently available.</p><div className="search"><input value={q} onChange={e=>{setQ(e.target.value);search(e.target.value)}} placeholder="Pokémon, set, card number, language..."/><button onClick={()=>search(q)}>Search</button></div></section>{err&&<div className="alert">{err}</div>}<section><div className="heading"><div><span className="eyebrow">IN STOCK</span><h2>{q?`Results for “${q}”`:"Catalogue"}</h2></div><small>{busy?"Loading…":`${cards.length} results`}</small></div><div className="grid">{cards.map(c=><article className="tile" key={c.id}><div className="art">{c.image_url?<img src={c.image_url} alt={c.name}/>:<b>POKÉMON</b>}</div><div className="info"><h3>{c.display_name||c.name}</h3><p>{c.set_name} · {c.card_number||"—"}</p><div className="tags"><span>{c.language}</span><span>{c.variant}</span></div><div className="stock">● Available</div></div></article>)}</div>{!busy&&!cards.length&&<div className="empty"><b>?</b><h3>No cards found</h3><p>Try another search.</p></div>}</section></main></div>
+ useEffect(()=>{search("")},[]); useEffect(()=>{search(q)},[filters]);
+ return <div className="shell"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Pokémon TCG Business</small></div></div><button className="ghost" onClick={admin}>Admin</button></header><main className="main"><section className="hero"><span className="eyebrow">PAUL'S POKE PULLS</span><h1>Find a card.</h1><p>Search the catalogue to see what's currently available.</p><div className="search"><input value={q} onChange={e=>{setQ(e.target.value);search(e.target.value)}} placeholder="Pokémon, set, card number, language..."/><button onClick={()=>search(q)}>Search</button></div><div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+ <button className="ghost" onClick={()=>setShowFilters(x=>!x)}>{showFilters?"Hide filters":"Filters"}</button>
+ {(filters.language||filters.set||filters.rarity)&&<button className="ghost" onClick={()=>setFilters({language:"",set:"",rarity:"",sort:"name"})}>Clear filters</button>}
+ {showFilters&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,width:"100%"}}>
+  <select value={filters.language} onChange={e=>setFilters(f=>({...f,language:e.target.value}))}><option value="">All languages</option>{[...new Set(cards.map(c=>c.language).filter(Boolean))].sort().map(x=><option key={x}>{x}</option>)}</select>
+  <select value={filters.set} onChange={e=>setFilters(f=>({...f,set:e.target.value}))}><option value="">All sets</option>{[...new Set(cards.map(c=>c.set_name).filter(Boolean))].sort().map(x=><option key={x}>{x}</option>)}</select>
+  <select value={filters.rarity} onChange={e=>setFilters(f=>({...f,rarity:e.target.value}))}><option value="">All rarities</option>{[...new Set(cards.map(c=>c.rarity).filter(Boolean))].sort().map(x=><option key={x}>{x}</option>)}</select>
+  <select value={filters.sort} onChange={e=>setFilters(f=>({...f,sort:e.target.value}))}><option value="name">Sort: Pokémon</option><option value="set">Sort: Set</option><option value="number">Sort: Card number</option><option value="quantity">Sort: Quantity</option></select>
+ </div>}
+</div></section>{err&&<div className="alert">{err}</div>}<section><div className="heading"><div><span className="eyebrow">IN STOCK</span><h2>{q?`Results for “${q}”`:"Catalogue"}</h2></div><small>{busy?"Loading…":`${cards.length} results`}</small></div><div className="grid">{cards.map(c=><article className="tile" key={c.id}><div className="art">{c.image_url?<img src={c.image_url} alt={c.name}/>:<b>POKÉMON</b>}</div><div className="info"><h3>{c.display_name||c.name}</h3><p>{c.set_name} · {c.card_number||"—"}</p><div className="tags"><span>{c.language}</span><span>{c.variant}</span></div><div className="stock">● Available</div></div></article>)}</div>{!busy&&!cards.length&&<div className="empty"><b>?</b><h3>No cards found</h3><p>Try another search.</p></div>}</section></main></div>
 }
 
 function Admin({session,publicSite}){
