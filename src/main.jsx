@@ -308,12 +308,42 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  </div>
 }
 function BatchTool({inventory,onDone}){
- const [text,setText]=useState(""),[result,setResult]=useState(null),[busy,setBusy]=useState(false);
- function parse(){const rows=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split(",").map(x=>x.trim());return {name:p[0]||"",set_name:p[1]||"",card_number:p[2]||"",quantity:Number(p[3]||1)}});let matched=0,unmatched=[];rows.forEach(r=>{const hit=inventory.find(i=>i.cards?.name?.toLowerCase()===r.name.toLowerCase()&&i.cards?.set_name?.toLowerCase()===r.set_name.toLowerCase()&&String(i.cards?.card_number||"").toLowerCase()===r.card_number.toLowerCase());if(hit)matched++;else unmatched.push(r)});setResult({rows,matched,unmatched})}
- async function apply(){if(!result)return;setBusy(true);for(const r of result.rows){const hit=inventory.find(i=>i.cards?.name?.toLowerCase()===r.name.toLowerCase()&&i.cards?.set_name?.toLowerCase()===r.set_name.toLowerCase()&&String(i.cards?.card_number||"").toLowerCase()===r.card_number.toLowerCase());if(hit){await supabase.from("inventory").update({quantity:Math.max(0,Number(hit.quantity)-r.quantity),status:Number(hit.quantity)-r.quantity<=0?"sold":hit.status}).eq("id",hit.id);await supabase.from("inventory_movements").insert({inventory_id:hit.id,movement_type:"sale",quantity:r.quantity,notes:"Batch stock movement"})}}setBusy(false);setResult(null);setText("");await onDone()}
- return <div className="panel"><span className="eyebrow">BATCH TOOLS</span><h2>Process a batch sale</h2><p>Paste one card per line as <code>Name,Set,Card Number,Quantity</code>. We'll match it against your inventory before changing anything.</p><textarea value={text} onChange={e=>setText(e.target.value)} placeholder={"Bidoof,Brilliant Stars,111/172,3\nPikachu,Paldea Evolved,062/193,2"} rows="9"/><div className="modalactions"><button onClick={parse}>Check matches</button>{result&&<button disabled={busy||result.unmatched.length>0} onClick={apply}>{busy?"Processing…":`Apply ${result.matched} matched rows`}</button>}</div>{result&&<div className="batchresult"><b>{result.matched} matched</b><span>{result.unmatched.length} unmatched</span>{result.unmatched.length>0&&<div className="alert">Unmatched rows must be resolved before applying the batch.</div>}</div>}</div>
+ const [mode,setMode]=useState("remove"),[text,setText]=useState(""),[result,setResult]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");
+ function parse(){
+  const rows=text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split(",").map(x=>x.trim());return{name:p[0]||"",set_name:p[1]||"",card_number:p[2]||"",quantity:Math.max(1,Number(p[3]||1))}});
+  const matched=[],missing=[];
+  for(const r of rows){
+   const hit=inventory.find(i=>{const c=i.cards||{};return String(c.name||"").toLowerCase()===r.name.toLowerCase()&&String(c.set_name||"").toLowerCase()===r.set_name.toLowerCase()&&String(c.card_number||"").toLowerCase()===r.card_number.toLowerCase()});
+   if(hit)matched.push({...r,row:hit,available:Number(hit.quantity||0)});else missing.push(r);
+  }
+  setResult({matched,missing});setMsg("");
+ }
+ async function apply(){
+  if(!result?.matched.length)return;setBusy(true);let changed=0,firstError="";
+  for(const r of result.matched){
+   const current=Number(r.available||0),next=mode==="remove"?Math.max(0,current-r.quantity):current+r.quantity;
+   const {error}=await supabase.from("inventory").update({quantity:next}).eq("id",r.row.id);
+   if(error&&!firstError)firstError=error.message;else if(!error)changed++;
+  }
+  setMsg(firstError?`${changed} updated, but one or more failed: ${firstError}`:`${changed} inventory row${changed===1?"":"s"} updated.`);
+  await onDone?.();setBusy(false);if(!firstError)setResult(null);
+ }
+ return <div className="panel">
+  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">BULK STOCK</span><h2>Batch inventory</h2><p>Paste one card per line and adjust stock in one go.</p></div></div>
+  <div className="two">
+   <label>Action<select value={mode} onChange={e=>setMode(e.target.value)}><option value="remove">Remove stock (sale)</option><option value="add">Add stock</option></select></label>
+   <label>Format<input readOnly value="Name, Set, Card Number, Quantity"/></label>
+  </div>
+  <label>Cards<textarea rows="10" value={text} onChange={e=>{setText(e.target.value);setResult(null)}} placeholder={"Bidoof, Brilliant Stars, 111/172, 3\nPikachu, Paldea Evolved, 062/193, 2"}/></label>
+  <div className="modalactions" style={{marginTop:12}}><button onClick={parse} disabled={!text.trim()}>Check matches</button><button className="ghost" onClick={()=>{setText("");setResult(null);setMsg("")}}>Clear</button></div>
+  {result&&<div className="batchresult" style={{marginTop:14}}><b>{result.matched.length} matched · {result.missing.length} not found</b>
+   {result.matched.length>0&&<div className="batchlist">{result.matched.map((r,i)=><div key={i}>✅ {r.name} — {r.set_name} — #{r.card_number} · {mode==="remove"?`-${r.quantity}`:`+${r.quantity}`} (currently {r.available})</div>)}</div>}
+   {result.missing.length>0&&<div className="batchlist">{result.missing.map((r,i)=><div key={i}>❌ {r.name} — {r.set_name} — #{r.card_number}</div>)}</div>}
+   {result.matched.length>0&&<button style={{marginTop:12}} onClick={apply} disabled={busy}>{busy?"Applying…":mode==="remove"?"Apply stock removal":"Apply stock additions"}</button>}
+  </div>}
+  {msg&&<div className="alert" style={{marginTop:12}}>{msg}</div>}
+ </div>
 }
-
 function Locations({locations,onDone}){
  const [name,setName]=useState(""),[desc,setDesc]=useState("");
  async function add(){if(!name.trim())return;await supabase.from("locations").insert({name:name.trim(),description:desc||null});setName("");setDesc("");await onDone()}
