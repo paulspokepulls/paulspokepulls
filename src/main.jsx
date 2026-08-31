@@ -103,54 +103,86 @@ function Admin({session,publicSite}){
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={filteredSets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
 
-function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing,busy,msg,close,submit}){
+const TCG_LANGS={English:"en",Japanese:"ja",Chinese:"zh-tw",Korean:"ko",German:"de",French:"fr",Spanish:"es",Portuguese:"pt",Polish:"pl",Russian:"ru",Italian:"it",Indonesian:"id",Thai:"th"};
+const TCG_LANGUAGE_OPTIONS=Object.keys(TCG_LANGS);
+
+function CardModal({form,setForm,locations,sets,setSearch,editing,busy,msg,close,submit}){
  const [setOpen,setSetOpen]=useState(false);
  const [cardOpen,setCardOpen]=useState(false);
  const [cardQuery,setCardQuery]=useState(form.card_number||"");
  const [cards,setCards]=useState([]);
  const [cardBusy,setCardBusy]=useState(false);
+ const [languageSets,setLanguageSets]=useState(sets||[]);
+ const [setBusy,setSetBusy]=useState(false);
  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+ const apiLang=TCG_LANGS[form.language]||"en";
+
+ useEffect(()=>{setLanguageSets(sets||[])},[sets]);
+
+ async function fetchSetsForLanguage(lang){
+   try{
+     const r=await fetch(`https://api.tcgdex.net/v2/${lang}/sets`);
+     if(!r.ok)throw new Error("set list failed");
+     const data=await r.json();
+     return Array.isArray(data)?data:[];
+   }catch(e){return []}
+ }
+
+ // Load the selected language's set list when the modal opens.
+ useEffect(()=>{
+   let cancelled=false;
+   const lang=TCG_LANGS[form.language]||"en";
+   setSetBusy(true);
+   fetchSetsForLanguage(lang).then(list=>{
+     if(!cancelled&&list.length)setLanguageSets(list);
+   }).finally(()=>{if(!cancelled)setSetBusy(false)});
+   return()=>{cancelled=true};
+ },[form.language]);
 
  const filteredSets=useMemo(()=>{
-   const q=(setSearchValue||"").toLowerCase().trim();
-   return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
- },[sets,setSearchValue]);
+   const q=(setSearch||"").toLowerCase().trim();
+   return (q?languageSets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):languageSets).slice(0,30);
+ },[languageSets,setSearch]);
 
  async function chooseSet(x){
    setSetOpen(false);
    setCardQuery("");
    setCards([]);
-
-   // The /sets endpoint returns a brief set object and its symbol is nullable.
-   // Fetch the complete set so older sets get their symbol whenever TCGdex has one.
    let full=x;
    try{
-     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(x.id)}`);
-     if(r.ok) full=await r.json();
+     const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/sets/${encodeURIComponent(x.id)}`);
+     if(r.ok)full=await r.json();
    }catch(e){}
-
-   const symbol=full.symbol||x.symbol||"";
    setForm(f=>({...f,
      set_id:full.id||x.id||"",
      set_code:full.id||x.id||"",
      set_name:full.name||x.name||"",
-     set_symbol_url:symbol
+     set_symbol_url:full.symbol||x.symbol||"",
+     tcgdex_language:apiLang
    }));
    setSearch(full.name||x.name||"");
+ }
+
+ async function changeLanguage(e){
+   const language=e.target.value;
+   set("language",language);
+   setSetOpen(false);
+   setCardOpen(false);
+   setCards([]);
+   setSearch("");
  }
 
  async function searchCards(value){
    setCardQuery(value);
    set("card_number",value);
-   if(!form.set_id || !value.trim()){setCards([]);return}
+   if(!form.set_id||!value.trim()){setCards([]);return}
    setCardBusy(true);
    try{
-     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(form.set_id)}`);
-     if(!r.ok) throw new Error("Card lookup failed");
+     const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/sets/${encodeURIComponent(form.set_id)}`);
+     if(!r.ok)throw new Error("card lookup failed");
      const data=await r.json();
      const q=value.toLowerCase().trim();
-     const matches=(data.cards||[]).filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20);
-     setCards(matches);
+     setCards((data.cards||[]).filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20));
    }catch(e){setCards([])}
    finally{setCardBusy(false)}
  }
@@ -158,8 +190,8 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  async function chooseCard(c){
    let full=c;
    try{
-     const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(c.id)}`);
-     if(r.ok) full=await r.json();
+     const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/cards/${encodeURIComponent(c.id)}`);
+     if(r.ok)full=await r.json();
    }catch(e){}
    setForm(f=>({...f,
      name:full.name||f.name,
@@ -169,7 +201,8 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      set_code:full.set?.id||f.set_code,
      set_name:full.set?.name||f.set_name,
      set_symbol_url:full.set?.symbol||f.set_symbol_url,
-     image_url:full.image||f.image_url||""
+     image_url:full.image||f.image_url||"",
+     tcgdex_language:apiLang
    }));
    setCardQuery(full.localId||"");
    setCards([]);
@@ -180,28 +213,35 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
   <div className="modal" onMouseDown={e=>e.stopPropagation()}>
    <div className="modalhead"><div><span className="eyebrow">{editing?"EDIT INVENTORY":"NEW STOCK"}</span><h2>{editing?"Edit card":"Add card"}</h2></div><button type="button" className="x" onClick={close}>×</button></div>
    <form onSubmit={submit}>
+    <label>Language
+      <select value={form.language||"English"} onChange={changeLanguage}>
+       {TCG_LANGUAGE_OPTIONS.map(x=><option key={x}>{x}</option>)}
+      </select>
+    </label>
+
     <div className="autocomplete">
-     <label>Set</label>
-     <input value={setSearchValue||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
+     <label>Set name or set ID</label>
+     <input value={setSearch||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true)}} placeholder={form.language==="Japanese"?"e.g. sv1V or バイオレットex":"Search set name or code — e.g. Jungle, sv06"}/>
      {setOpen&&<div className="suggestions">
-      {filteredSets.map(x=><button type="button" className="suggestion" key={x.id} onClick={()=>chooseSet(x)}>
+      {setBusy&&<div className="noresults">Loading {form.language||"English"} sets…</div>}
+      {!setBusy&&filteredSets.map(x=><button type="button" className="suggestion" key={`${x.id}-${x.name}`} onClick={()=>chooseSet(x)}>
        {x.symbol?<img src={`${x.symbol}.webp`} alt="" onError={e=>{if(e.currentTarget.src!==x.symbol)e.currentTarget.src=x.symbol}}/>:<span className="symbolplaceholder">◈</span>}
        <span><b>{x.name}</b><small>{x.id}</small></span>
       </button>)}
-      {!filteredSets.length&&<div className="noresults">No matching sets.</div>}
+      {!setBusy&&!filteredSets.length&&<div className="noresults">No matching set. Try the exact set ID.</div>}
      </div>}
     </div>
 
     {form.set_id&&<div className="setpreview">
      {form.set_symbol_url?<img src={`${form.set_symbol_url}.webp`} alt="Set symbol" onError={e=>{if(e.currentTarget.src!==form.set_symbol_url)e.currentTarget.src=form.set_symbol_url;else e.currentTarget.style.display="none"}}/>:<span className="symbolplaceholder">◈</span>}
-     <span><b>{form.set_name}</b><small>{form.set_code}</small></span>
+     <span><b>{form.set_name}</b><small>{form.set_code} · {form.language||"English"}</small></span>
     </div>}
 
     <div className="autocomplete">
      <label>Card number / Pokémon</label>
-     <input value={cardQuery} onFocus={()=>setCardOpen(true)} onChange={e=>{setCardOpen(true);searchCards(e.target.value)}} placeholder={form.set_id?"e.g. 32 or Nidorina":"Select a set first"} disabled={!form.set_id}/>
+     <input value={cardQuery} onFocus={()=>setCardOpen(true)} onChange={e=>{setCardOpen(true);searchCards(e.target.value)}} placeholder={form.set_id?"e.g. 32 or Pokémon name":"Select a set first"} disabled={!form.set_id}/>
      {cardOpen&&form.set_id&&cardQuery.trim()&&<div className="suggestions">
-      {cardBusy&&<div className="noresults">Searching cards…</div>}
+      {cardBusy&&<div className="noresults">Searching {form.language||"English"} cards…</div>}
       {!cardBusy&&cards.map(c=><button type="button" className="suggestion" key={c.id} onClick={()=>chooseCard(c)}>
        {c.image?<img className="cardthumb" src={c.image} alt=""/>:null}
        <span><b>#{c.localId} {c.name}</b><small>{c.rarity||"Card"}</small></span>
@@ -215,7 +255,6 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
     <div className="two">
      <label>Card name<input required value={form.name||""} onChange={e=>set("name",e.target.value)}/></label>
      <label>Card number<input value={form.card_number||""} onChange={e=>{set("card_number",e.target.value);setCardQuery(e.target.value)}}/></label>
-     <label>Language<select value={form.language||"English"} onChange={e=>set("language",e.target.value)}>{["English","Japanese","German","French","Spanish","Portuguese","Korean","Chinese","Polish","Russian","Other"].map(x=><option key={x}>{x}</option>)}</select></label>
      <label>Variant<input value={form.variant||"Normal"} onChange={e=>set("variant",e.target.value)}/></label>
      <label>Condition<input value={form.condition||"NM"} onChange={e=>set("condition",e.target.value)}/></label>
      <label>Quantity<input type="number" min="1" value={form.quantity||1} onChange={e=>set("quantity",e.target.value)}/></label>

@@ -33,3 +33,5 @@ button:not(.ghost):not(.x):not(.suggestion):not(.editbtn):not(.deletebtn):hover{
 .alert{padding:10px 12px;border-radius:10px;background:#fff4f2;border:1px solid #efd1cb;color:#8d302b;font-size:12px}
 .batchresult{padding:12px;border:1px solid #e5ddd8;border-radius:10px;background:#faf8f6}
 @media(max-width:650px){header,.admintitle,.heading{align-items:flex-start;flex-direction:column}.main,.adminmain{padding:18px}.hero{padding:35px 0 25px}.two{grid-template-columns:1fr}.row{align-items:flex-start;flex-direction:column}.rowright{width:100%;justify-content:flex-end}.search{flex-direction:column}}
+
+.lookupstatus{padding:10px 12px;background:#fff;color:#867b76;font-size:12px;border:1px solid #e5ddd8;border-radius:8px;margin-top:5px}
