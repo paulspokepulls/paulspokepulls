@@ -116,12 +116,27 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
    return (q?sets.filter(x=>`${x.name||""} ${x.id||""}`.toLowerCase().includes(q)):sets).slice(0,25);
  },[sets,setSearchValue]);
 
- function chooseSet(x){
-   setForm(f=>({...f,set_id:x.id||"",set_code:x.id||"",set_name:x.name||"",set_symbol_url:x.symbol||""}));
-   setSearch(x.name||"");
+ async function chooseSet(x){
    setSetOpen(false);
    setCardQuery("");
    setCards([]);
+
+   // The /sets endpoint returns a brief set object and its symbol is nullable.
+   // Fetch the complete set so older sets get their symbol whenever TCGdex has one.
+   let full=x;
+   try{
+     const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(x.id)}`);
+     if(r.ok) full=await r.json();
+   }catch(e){}
+
+   const symbol=full.symbol||x.symbol||"";
+   setForm(f=>({...f,
+     set_id:full.id||x.id||"",
+     set_code:full.id||x.id||"",
+     set_name:full.name||x.name||"",
+     set_symbol_url:symbol
+   }));
+   setSearch(full.name||x.name||"");
  }
 
  async function searchCards(value){
@@ -170,7 +185,7 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      <input value={setSearchValue||""} onFocus={()=>setSetOpen(true)} onChange={e=>{setSearch(e.target.value);setSetOpen(true);setForm(f=>({...f,set_id:"",set_name:"",set_code:"",set_symbol_url:""}))}} placeholder="Search sets — e.g. Jungle"/>
      {setOpen&&<div className="suggestions">
       {filteredSets.map(x=><button type="button" className="suggestion" key={x.id} onClick={()=>chooseSet(x)}>
-       {x.symbol?<img src={x.symbol} alt=""/>:<span className="symbolplaceholder">◈</span>}
+       {x.symbol?<img src={`${x.symbol}.webp`} alt="" onError={e=>{if(e.currentTarget.src!==x.symbol)e.currentTarget.src=x.symbol}}/>:<span className="symbolplaceholder">◈</span>}
        <span><b>{x.name}</b><small>{x.id}</small></span>
       </button>)}
       {!filteredSets.length&&<div className="noresults">No matching sets.</div>}
@@ -178,7 +193,7 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
     </div>
 
     {form.set_id&&<div className="setpreview">
-     {form.set_symbol_url?<img src={form.set_symbol_url} alt="Set symbol" onError={e=>{e.currentTarget.style.display="none"}}/>:<span className="symbolplaceholder">◈</span>}
+     {form.set_symbol_url?<img src={`${form.set_symbol_url}.webp`} alt="Set symbol" onError={e=>{if(e.currentTarget.src!==form.set_symbol_url)e.currentTarget.src=form.set_symbol_url;else e.currentTarget.style.display="none"}}/>:<span className="symbolplaceholder">◈</span>}
      <span><b>{form.set_name}</b><small>{form.set_code}</small></span>
     </div>}
 
