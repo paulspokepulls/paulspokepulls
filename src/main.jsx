@@ -57,7 +57,7 @@ function Admin({session,publicSite}){
 
  async function saveCard(e){
   e.preventDefault();setBusy(true);setMsg("");
-  const cardPayload={name:form.name.trim(),set_name:form.set_name.trim(),set_code:form.set_code||null,set_id:form.set_id||null,set_symbol_url:form.set_symbol_url||null,card_number:form.card_number||null,language:form.language,variant:form.variant,rarity:form.rarity||null};
+  const cardPayload={name:form.name.trim(),english_name:(form.english_name||form.name||"").trim(),set_name:form.set_name.trim(),set_code:form.set_code||null,set_id:form.set_id||null,set_symbol_url:form.set_symbol_url||null,card_number:form.card_number||null,language:form.language,variant:form.variant,rarity:form.rarity||null};
   if(editing){
    const {error:ce}=await supabase.from("cards").update(cardPayload).eq("id",editing.cards.id);
    if(ce){setMsg(ce.message);setBusy(false);return}
@@ -119,30 +119,20 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  const [englishCards,setEnglishCards]=useState([]);
  const [englishCardBusy,setEnglishCardBusy]=useState(false);
 
- async function getEnglishCardName(card){
-   // The multilingual card endpoint is used for identification, but the
-   // catalogue's canonical Pokémon name is English.
+ async function getEnglishPokemonName(card){
    if(apiLang==="en")return card?.name||"";
-   try{
-     const id=card?.id||"";
-     const localId=card?.localId||"";
-     const setId=card?.set?.id||form.set_id||"";
-     if(id){
-       const r=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(id)}`);
-       if(r.ok){
-         const en=await r.json();
-         if(en?.name)return en.name;
-       }
+   const dexId=Array.isArray(card?.dexId)?card.dexId[0]:card?.dexId;
+   if(dexId){
+    try{
+     const r=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
+     if(r.ok){
+      const species=await r.json();
+      const en=(species.names||[]).find(n=>n.language?.name==="en");
+      if(en?.name)return en.name;
+      if(species.name)return species.name.replace(/-/g," ");
      }
-     if(setId&&localId){
-       const r=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(setId)}`);
-       if(r.ok){
-         const setData=await r.json();
-         const hit=(setData.cards||[]).find(c=>String(c.localId)===String(localId));
-         if(hit?.name)return hit.name;
-       }
-     }
-   }catch(e){}
+    }catch(e){}
+   }
    return card?.name||"";
  }
 
@@ -207,28 +197,29 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
    if(!form.set_id||!value.trim()){setCards([]);return}
    setCardBusy(true);
    try{
-     const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/sets/${encodeURIComponent(form.set_id)}`);
-     if(!r.ok)throw new Error("card lookup failed");
-     const data=await r.json();
-     const q=value.toLowerCase().trim();
-     const langCards=data.cards||[];
-     if(apiLang==="en"){
-       setCards(langCards.filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20));
-     }else{
-       setEnglishCardBusy(true);
-       const englishSetId=form.set_id;
-       let enCards=[];
-       try{
-         const er=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(englishSetId)}`);
-         if(er.ok){const ed=await er.json();enCards=ed.cards||[]}
-       }catch(e){}
-       const merged=langCards.map(c=>{
-         const en=enCards.find(ec=>String(ec.localId)===String(c.localId));
-         return {...c,englishName:en?.name||""};
-       });
-       setCards(merged.filter(c=>`${c.localId||""} ${c.name||""} ${c.englishName||""}`.toLowerCase().includes(q)).slice(0,20));
-       setEnglishCardBusy(false);
-     }
+    const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/sets/${encodeURIComponent(form.set_id)}`);
+    if(!r.ok)throw new Error("card lookup failed");
+    const data=await r.json();
+    const q=value.toLowerCase().trim();
+    const langCards=(data.cards||[]).slice(0,200);
+    if(apiLang==="en"){
+     setCards(langCards.filter(c=>`${c.localId||""} ${c.name||""}`.toLowerCase().includes(q)).slice(0,20));
+    }else{
+     const enriched=await Promise.all(langCards.map(async c=>{
+      const dexId=Array.isArray(c.dexId)?c.dexId[0]:c.dexId;
+      if(!dexId)return {...c,englishName:""};
+      try{
+       const sr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
+       if(sr.ok){
+        const species=await sr.json();
+        const en=(species.names||[]).find(n=>n.language?.name==="en");
+        return {...c,englishName:en?.name||species.name||""};
+       }
+      }catch(e){}
+      return {...c,englishName:""};
+     }));
+     setCards(enriched.filter(c=>`${c.localId||""} ${c.name||""} ${c.englishName||""}`.toLowerCase().includes(q)).slice(0,20));
+    }
    }catch(e){setCards([])}
    finally{setCardBusy(false)}
  }
@@ -239,9 +230,10 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
      const r=await fetch(`https://api.tcgdex.net/v2/${apiLang}/cards/${encodeURIComponent(c.id)}`);
      if(r.ok)full=await r.json();
    }catch(e){}
-   const englishName=await getEnglishCardName(full);
+   const englishName=await getEnglishPokemonName(full);
    setForm(f=>({...f,
      name:englishName||full.name||f.name,
+     english_name:englishName||full.name||f.english_name||f.name,
      card_number:full.localId||f.card_number,
      rarity:full.rarity||f.rarity,
      set_id:full.set?.id||f.set_id,
