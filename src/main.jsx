@@ -407,7 +407,13 @@ function CardmarketMatcher({inventory,onDone}){
     .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
     .eq("id_product",String(exactId)).maybeSingle();
    if(error)throw error;
-   const price=prices[String(exactId)]||null;
+   let price=prices[String(exactId)]||null;
+   if(!price){
+    const {data:priceData,error:priceError}=await supabase.from("cardmarket_price_guide").select("id_product,low,trend,avg,avg1,avg7,avg30,low_holo,trend_holo,avg_holo").eq("id_product",Number(exactId)).maybeSingle();
+    if(priceError)throw priceError;
+    price=priceData||null;
+    if(price)setPrices(prev=>({...prev,[String(exactId)]:price}));
+   }
    if(data)return [{...data,score:1000,exact_tcgdex_match:true,price,
     expansion_distance_days:null,tcg_set:tcg?.setData?.name||c.set_name||"",
     tcg_attacks:(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean)}];
