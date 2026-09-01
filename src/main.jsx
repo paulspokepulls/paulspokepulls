@@ -335,25 +335,41 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
  </div>
 }
 function CardmarketMatcher({inventory,onDone}){
- const [q,setQ]=useState(""),[selected,setSelected]=useState(null),[form,setForm]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");
+ const [q,setQ]=useState(""),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState(""),[matches,setMatches]=useState([]);
  const rows=inventory.filter(r=>{const c=r.cards||{},x=q.toLowerCase().trim();return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id].filter(Boolean).join(" ").toLowerCase().includes(x)});
- function open(r){const c=r.cards||{};setSelected(r);setForm({cardmarket_product_id:c.cardmarket_product_id||"",cardmarket_name:c.cardmarket_name||"",cardmarket_expansion:c.cardmarket_expansion||"",cardmarket_language:c.cardmarket_language||c.language||"",cardmarket_url:c.cardmarket_url||""});setMsg("")}
- async function save(){if(!selected||!form)return;setBusy(true);setMsg("");const {error}=await supabase.from("cards").update({cardmarket_product_id:form.cardmarket_product_id||null,cardmarket_name:form.cardmarket_name||null,cardmarket_expansion:form.cardmarket_expansion||null,cardmarket_language:form.cardmarket_language||null,cardmarket_url:form.cardmarket_url||null}).eq("id",selected.cards.id);if(error)setMsg(error.message);else{setMsg("Cardmarket match saved.");setSelected(null);setForm(null);await onDone?.()}setBusy(false)}
+ async function findMatches(r){
+  const c=r.cards||{};setSelected(r);setBusy(true);setMsg("");setMatches([]);
+  let query=supabase.from("cardmarket_catalogue").select("id_product,name,expansion_id,language,card_number,url").limit(100);
+  if(c.card_number)query=query.ilike("card_number",`%${c.card_number}%`);
+  const {data,error}=await query;
+  if(error){setMsg(error.code==="42P01"?"Cardmarket catalogue table is not installed yet. Run the included SQL migration.":error.message);setBusy(false);return}
+  const wanted=(c.english_name||c.name||"").toLowerCase(), setCode=(c.set_code||"").toLowerCase(), lang=(c.language||"").toLowerCase();
+  const ranked=(data||[]).map(x=>{const hay=[x.name,x.expansion_id,x.language,x.card_number].filter(Boolean).join(" ").toLowerCase();let score=0;
+   if(String(x.card_number||"").toLowerCase()===String(c.card_number||"").toLowerCase())score+=50;
+   if(lang&&String(x.language||"").toLowerCase().includes(lang))score+=25;
+   if(setCode&&String(x.expansion_id||"").toLowerCase()===setCode)score+=25;
+   if(wanted&&hay.includes(wanted))score+=30;
+   return {...x,score};
+  }).sort((a,b)=>b.score-a.score);
+  setMatches(ranked);setBusy(false);
+ }
+ async function saveMatch(m){
+  if(!selected)return;setBusy(true);setMsg("");
+  const {error}=await supabase.from("cards").update({cardmarket_product_id:String(m.id_product),cardmarket_name:m.name||null,cardmarket_expansion:m.expansion_id||null,cardmarket_language:m.language||null,cardmarket_url:m.url||null}).eq("id",selected.cards.id);
+  if(error)setMsg(error.message);else{setSelected(null);setMatches([]);setMsg("Cardmarket match saved.");await onDone?.()}setBusy(false)
+ }
  return <div className="panel">
-  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Match each card to the exact Cardmarket product before prices are imported.</p></div></div>
+  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Find the exact Cardmarket catalogue product using Pokémon, set, number and language.</p></div></div>
   <div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search Pokémon, set, number or language..."/><small>{rows.filter(r=>r.cards?.cardmarket_product_id).length}/{rows.length} shown cards matched</small></div>
-  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>open(r)}>Match</button></div></div>)}</div>
-  {selected&&form&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setForm(null)}}}><div className="modal" onMouseDown={e=>e.stopPropagation()}>
-   <div className="modalhead"><div><span className="eyebrow">CARDMARKET PRODUCT</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setForm(null)}}>×</button></div>
-   <p>Use the exact language-specific Cardmarket product. Japanese and other Asian-language Pokémon cards have separate catalogue products.</p>
-   <a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Pokémon Singles on Cardmarket</a>
-   <label>Product ID<input value={form.cardmarket_product_id} onChange={e=>setForm(f=>({...f,cardmarket_product_id:e.target.value}))} placeholder="Product ID"/></label>
-   <label>Exact product name<input value={form.cardmarket_name} onChange={e=>setForm(f=>({...f,cardmarket_name:e.target.value}))}/></label>
-   <label>Expansion<input value={form.cardmarket_expansion} onChange={e=>setForm(f=>({...f,cardmarket_expansion:e.target.value}))}/></label>
-   <label>Cardmarket language<input value={form.cardmarket_language} onChange={e=>setForm(f=>({...f,cardmarket_language:e.target.value}))}/></label>
-   <label>Exact product URL<input value={form.cardmarket_url} onChange={e=>setForm(f=>({...f,cardmarket_url:e.target.value}))}/></label>
+  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>findMatches(r)} disabled={busy}>{r.cards?.cardmarket_product_id?"Find again":"Find match"}</button></div></div>)}</div>
+  {selected&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setMatches([])}}}><div className="modal" onMouseDown={e=>e.stopPropagation()}>
+   <div className="modalhead"><div><span className="eyebrow">CARDMARKET SEARCH</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setMatches([])}}>×</button></div>
+   <p>Possible matches are ranked using card number, language, set code and Pokémon name. Review before saving.</p>
+   {busy&&<div className="noresults">Searching Cardmarket catalogue…</div>}
+   {!busy&&!matches.length&&!msg&&<div className="noresults">No catalogue matches found.</div>}
+   {!busy&&matches.map((m,i)=><div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>{m.expansion_id||"No expansion"} · {m.card_number||"No number"} · {m.language||"Unknown language"} · Product {m.id_product}</small></div></div><div className="rowright"><span>{m.score} match</span><button onClick={()=>saveMatch(m)}>Use this match</button></div></div>)}
    {msg&&<div className="alert">{msg}</div>}
-   <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setForm(null)}}>Cancel</button><button onClick={save} disabled={busy}>{busy?"Saving…":"Save match"}</button></div>
+   <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setMatches([])}}>Close</button><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
   </div></div>}
  </div>
 }
