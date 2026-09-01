@@ -53,7 +53,7 @@ function Admin({session,publicSite}){
  const [email,setEmail]=useState(""),[password,setPassword]=useState(""),[msg,setMsg]=useState(""),[tab,setTab]=useState("dashboard");
  const [inv,setInv]=useState([]),[locations,setLocations]=useState([]),[sets,setSets]=useState([]),[setSearchValue,setSetSearchValue]=useState("");
  const [q,setQ]=useState(""),[busy,setBusy]=useState(false),[form,setForm]=useState(blank),[editing,setEditing]=useState(null),[showForm,setShowForm]=useState(false);
- const [marketValue,setMarketValue]=useState(0),[pricedCount,setPricedCount]=useState(0),[priceCardCount,setPriceCardCount]=useState(0);
+ const [marketValue,setMarketValue]=useState(0),[marketValueEur,setMarketValueEur]=useState(0),[eurToGbp,setEurToGbp]=useState(null),[pricedCount,setPricedCount]=useState(0),[priceCardCount,setPriceCardCount]=useState(0);
 
  async function login(e){e.preventDefault();setBusy(true);setMsg("");if(!supabase){setMsg("Supabase is not connected.");setBusy(false);return}const {error}=await supabase.auth.signInWithPassword({email,password});if(error)setMsg(error.message);setBusy(false)}
 
@@ -87,7 +87,14 @@ function Admin({session,publicSite}){
     value+=trend*qty;
    }
   }
-  setMarketValue(value);setPricedCount(priced);setPriceCardCount(physicalPriced);
+  setMarketValueEur(value);setPricedCount(priced);setPriceCardCount(physicalPriced);
+  try{
+   const fx=await fetch("https://data-api.ecb.europa.eu/service/data/EXR/D.GBP.EUR.SP00.A?format=jsondata");
+   if(!fx.ok)throw new Error("FX unavailable");
+   const json=await fx.json();
+   const rate=Number(json?.dataSets?.[0]?.series?.["0:0:0:0:0"]?.observations?.[Object.keys(json?.dataSets?.[0]?.series?.["0:0:0:0:0"]?.observations||{}).pop()]?.[0]);
+   if(Number.isFinite(rate)&&rate>0){setEurToGbp(rate);setMarketValue(value*rate)}else throw new Error("Invalid FX rate");
+  }catch(e){setEurToGbp(null);setMarketValue(value)}
  }
  async function loadSets(){
   try{const r=await fetch(API);if(!r.ok)throw new Error("Set database unavailable");const data=await r.json();setSets(data||[])}
@@ -145,7 +152,7 @@ function Admin({session,publicSite}){
  if(!session)return <div className="login"><button className="back" onClick={publicSite}>← Public catalogue</button><div className="loginbox"><strong className="mark">PP</strong><span className="eyebrow">PRIVATE AREA</span><h1>Admin login</h1><p>Manage your Pokémon TCG business.</p><form onSubmit={login}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{msg&&<div className="alert">{msg}</div>}<button disabled={busy}>{busy?"Signing in…":"Sign in"}</button></form></div></div>;
 
  return <div className="admin"><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","cardmarket","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":t==="cardmarket"?"Cardmarket":"Locations"}</button>)}</nav>
- {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>€{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
+ {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
