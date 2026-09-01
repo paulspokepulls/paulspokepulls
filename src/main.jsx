@@ -345,11 +345,28 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
 }
 function CardmarketMatcher({inventory,onDone}){
  const [q,setQ]=useState(""),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState(""),[matches,setMatches]=useState([]);
+ const [prices,setPrices]=useState({}),[autoBusy,setAutoBusy]=useState(false),[autoResult,setAutoResult]=useState(null);
 
  const rows=inventory.filter(r=>{
   const c=r.cards||{},x=q.toLowerCase().trim();
   return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id,c.set_code].filter(Boolean).join(" ").toLowerCase().includes(x)
  });
+
+ async function loadPrices(rows){
+  const ids=[...new Set(rows.map(r=>String(r.cards?.cardmarket_product_id||"").trim()).filter(Boolean))].map(Number).filter(Number.isFinite);
+  if(!ids.length){setPrices({});return}
+  const out={};
+  for(let i=0;i<ids.length;i+=100){
+   const {data,error}=await supabase.from("cardmarket_price_guide").select("id_product,low,trend,avg,avg1,avg7,avg30,low_holo,trend_holo,avg_holo").in("id_product",ids.slice(i,i+100));
+   if(!error)(data||[]).forEach(x=>{out[String(x.id_product)]=x});
+  }
+  setPrices(out);
+ }
+ const rowsForPricing=inventory.filter(r=>{
+  const c=r.cards||{},x=q.toLowerCase().trim();
+  return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id,c.set_code].filter(Boolean).join(" ").toLowerCase().includes(x)
+ });
+ useEffect(()=>{loadPrices(rowsForPricing)},[inventory,q]);
 
  function norm(v){return String(v||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}
 
@@ -373,48 +390,66 @@ function CardmarketMatcher({inventory,onDone}){
   }catch(_){return null}
  }
 
- async function findMatches(r){
-  const c=r.cards||{};
-  setSelected(r);setBusy(true);setMsg("");setMatches([]);
-  const wanted=String(c.english_name||c.name||"").trim().replace(/[%_]/g,"");
-  if(!wanted){setMsg("This card has no English Pokémon name to search for.");setBusy(false);return}
-
+ async function searchCardmarketMatches(r){
+  const c=r.cards||{},wanted=String(c.english_name||c.name||"").trim().replace(/[%_]/g,"");
+  if(!wanted)return [];
   const tcg=await getTcgdexCard(c);
   const releaseDate=tcg?.setData?.releaseDate?new Date(tcg.setData.releaseDate):null;
   const tcgAttacks=(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean);
-
-  let {data,error}=await supabase.from("cardmarket_catalogue")
-    .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
-    .eq("category_id",51).ilike("name",`%${wanted}%`).limit(300);
-
-  if(error){
-   setMsg(error.code==="42P01"?"Cardmarket catalogue table is not installed yet.":error.message);
-   setBusy(false);return
+  const terms=[wanted,c.name].map(x=>String(x||"").trim().replace(/[%_]/g,"")).filter(Boolean);
+  const all=new Map();
+  for(const term of [...new Set(terms.map(norm))]){
+   const {data,error}=await supabase.from("cardmarket_catalogue").select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added").eq("category_id",51).ilike("name",`%${term}%`).limit(300);
+   if(error)throw error;
+   for(const x of (data||[]))all.set(String(x.id_product),x);
   }
-
-  const groups=new Map();
-  for(const x of (data||[])){const k=String(x.expansion_id||"");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(x)}
+  const data=[...all.values()],groups=new Map();
+  for(const x of data){const k=String(x.expansion_id||"");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(x)}
   const expansionDistance=new Map();
   for(const [k,items] of groups){
    const dates=items.map(x=>x.date_added&&x.date_added!=="0000-00-00 00:00:00"?new Date(String(x.date_added).replace(" ","T")):null).filter(d=>d&&!Number.isNaN(d.getTime()));
-   let dist=Infinity;
-   if(releaseDate&&dates.length)dist=Math.min(...dates.map(d=>Math.abs(d-releaseDate)/86400000));
+   const dist=releaseDate&&dates.length?Math.min(...dates.map(d=>Math.abs(d-releaseDate)/86400000)):Infinity;
    expansionDistance.set(k,dist);
   }
-
-  const ranked=(data||[]).map(x=>{
+  const wn=norm(wanted);
+  return data.map(x=>{
    const pn=norm(x.name);let score=0;
-   if(pn===norm(wanted))score+=100;else if(pn.startsWith(norm(wanted)+" "))score+=80;else if(pn.includes(norm(wanted)))score+=55;
+   if(pn===wn)score+=100;else if(pn.startsWith(wn+" "))score+=80;else if(pn.includes(wn))score+=55;
    const dist=expansionDistance.get(String(x.expansion_id));
    if(Number.isFinite(dist))score+=Math.max(0,70-Math.min(70,dist*1.5));
-   if(tcgAttacks.length){
-    const hay=norm(x.name),hits=tcgAttacks.filter(a=>hay.includes(a)).length;
-    score+=hits*35;if(hits===tcgAttacks.length)score+=30;
-   }
+   if(tcgAttacks.length){const hay=norm(x.name),hits=tcgAttacks.filter(a=>hay.includes(a)).length;score+=hits*35;if(hits===tcgAttacks.length)score+=30}
    return {...x,score,expansion_distance_days:Number.isFinite(dist)?Math.round(dist*10)/10:null,tcg_set:tcg?.setData?.name||c.set_name||"",tcg_attacks:tcgAttacks};
   }).sort((a,b)=>b.score-a.score);
+ }
 
-  setMatches(ranked);setBusy(false);
+ async function findMatches(r){
+  setSelected(r);setBusy(true);setMsg("");setMatches([]);
+  const c=r.cards||{};
+  if(!String(c.english_name||c.name||"").trim()){setMsg("This card has no English Pokémon name to search for.");setBusy(false);return}
+  try{
+   const ranked=await searchCardmarketMatches(r);setMatches(ranked);
+   if(!ranked.length)setMsg("No products with that Pokémon name were found.");
+  }catch(error){setMsg(error.code==="42P01"?"Cardmarket catalogue table is not installed yet.":error.message||String(error))}
+  finally{setBusy(false)}
+ }
+
+ async function autoMatch(){
+  const targets=rowsForPricing.filter(r=>!r.cards?.cardmarket_product_id);
+  if(!targets.length){setAutoResult({matched:0,skipped:0,total:0});return}
+  setAutoBusy(true);setAutoResult(null);setMsg("");
+  let matched=0,skipped=0,firstError="";
+  for(const r of targets){
+   try{
+    const ranked=await searchCardmarketMatches(r),top=ranked[0],second=ranked[1];
+    const confident=!!top&&top.score>=140&&(!second||top.score-second.score>=15);
+    if(!confident){skipped++;continue}
+    const {error}=await supabase.from("cards").update({cardmarket_product_id:String(top.id_product),cardmarket_name:top.name||null,cardmarket_expansion:String(top.expansion_id||""),cardmarket_language:r.cards?.language||null,cardmarket_url:null}).eq("id",r.cards.id);
+    if(error){skipped++;if(!firstError)firstError=error.message}else matched++;
+   }catch(error){skipped++;if(!firstError)firstError=error.message||String(error)}
+  }
+  setAutoResult({matched,skipped,total:targets.length});
+  if(firstError)setMsg(`Auto-match completed with an error: ${firstError}`);
+  await onDone?.();setAutoBusy(false);
  }
 
  async function saveMatch(m){
@@ -427,16 +462,21 @@ function CardmarketMatcher({inventory,onDone}){
   setBusy(false);
  }
 
+ const matchedCount=rows.filter(r=>r.cards?.cardmarket_product_id).length;
+ const pricedCount=rows.filter(r=>r.cards?.cardmarket_product_id&&prices[String(r.cards.cardmarket_product_id)]).length;
+ const marketTotal=rows.reduce((sum,r)=>{const p=prices[String(r.cards?.cardmarket_product_id||"")];return sum+(p?.trend!=null?Number(p.trend)*Number(r.quantity||0):0)},0);
+
  return <div className="panel">
-  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Resolve the Pokémon, set and card number, then match the corresponding Cardmarket product.</p></div></div>
-  <div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search Pokémon, set, number or language..."/><small>{rows.filter(r=>r.cards?.cardmarket_product_id).length}/{rows.length} shown cards matched</small></div>
-  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>findMatches(r)} disabled={busy}>{r.cards?.cardmarket_product_id?"Find again":"Find match"}</button></div></div>)}</div>
+  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching & pricing</h2><p>Match the exact Cardmarket product, then use the imported daily price guide to value your stock.</p></div></div>
+  <div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search Pokémon, set, number or language..."/><button onClick={autoMatch} disabled={autoBusy||!rows.some(r=>!r.cards?.cardmarket_product_id)}>{autoBusy?"Auto-matching…":"Auto-match high confidence"}</button><small>{matchedCount}/{rows.length} matched · {pricedCount} priced · Trend stock value £{marketTotal.toFixed(2)}</small></div>
+  {autoResult&&<div className="alert" style={{marginTop:10}}>Auto-match: {autoResult.matched} matched, {autoResult.skipped} skipped out of {autoResult.total}. Skipped cards are left for manual review.</div>}
+  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?(()=>{const p=prices[String(r.cards.cardmarket_product_id)];return p?`CM ${r.cards.cardmarket_product_id} · Trend £${Number(p.trend||0).toFixed(2)}`:`CM ${r.cards.cardmarket_product_id}`})():"Not matched"}</span><button className="editbtn" onClick={()=>findMatches(r)} disabled={busy||autoBusy}>{r.cards?.cardmarket_product_id?"Find again":"Find match"}</button></div></div>)}</div>
   {selected&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setMatches([])}}}><div className="modal" onMouseDown={e=>e.stopPropagation()}>
    <div className="modalhead"><div><span className="eyebrow">CARDMARKET SEARCH</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setMatches([])}}>×</button></div>
    <p>Results combine TCGdex set/card data with Cardmarket's product ID, expansion ID, metacard ID and product name. Cardmarket's catalogue does not directly expose language or collector number.</p>
    {busy&&<div className="noresults">Resolving set/card and searching Cardmarket catalogue…</div>}
    {!busy&&!matches.length&&!msg&&<div className="noresults">No products with that Pokémon name were found.</div>}
-   {!busy&&matches.slice(0,30).map((m,i)=><div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>Product {m.id_product} · Expansion {m.expansion_id||"unknown"} · Metacard {m.metacard_id||"unknown"} · {m.expansion_distance_days==null?"release date unavailable":`${m.expansion_distance_days}d from set release`}</small></div></div><div className="rowright"><span>{Math.round(m.score)} match</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div></div>)}
+   {!busy&&matches.slice(0,30).map((m,i)=>{const p=prices[String(m.id_product)];return <div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>Product {m.id_product} · Expansion {m.expansion_id||"unknown"} · Metacard {m.metacard_id||"unknown"} · {m.expansion_distance_days==null?"release date unavailable":`${m.expansion_distance_days}d from set release`}{p?` · Trend £${Number(p.trend||0).toFixed(2)} · Low £${Number(p.low||0).toFixed(2)}`:" · No price guide record"}</small></div></div><div className="rowright"><span>{Math.round(m.score)} match</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div></div>})}
    {msg&&<div className="alert">{msg}</div>}
    <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setMatches([])}}>Close</button><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
   </div></div>}
