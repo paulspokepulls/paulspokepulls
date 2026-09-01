@@ -95,11 +95,6 @@ function Admin({session,publicSite}){
   const cardId=row.cards?.id||row.card_id;
   const {error}=await supabase.from("inventory").delete().eq("id",row.id);
   if(error){setMsg(error.message);setBusy(false);return}
-
-  // The inventory row and the card master record are separate.
-  // If this was the last inventory row for that card, remove the orphaned
-  // card master record too; otherwise a later Add Card hits the cards UNIQUE
-  // constraint even though the card is no longer visible in inventory.
   if(cardId){
    const {data:remaining,error:re}=await supabase.from("inventory").select("id").eq("card_id",cardId).limit(1);
    if(re){setMsg(re.message);setBusy(false);return}
@@ -108,7 +103,6 @@ function Admin({session,publicSite}){
     if(de){setMsg(de.message);setBusy(false);return}
    }
   }
-
   await load();
   setMsg("Inventory row deleted.");
   setBusy(false);
@@ -351,101 +345,101 @@ function CardModal({form,setForm,locations,sets,setSearch,setSearchValue,editing
 }
 function CardmarketMatcher({inventory,onDone}){
  const [q,setQ]=useState(""),[selected,setSelected]=useState(null),[busy,setBusy]=useState(false),[msg,setMsg]=useState(""),[matches,setMatches]=useState([]);
- const rows=inventory.filter(r=>{const c=r.cards||{},x=q.toLowerCase().trim();return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id].filter(Boolean).join(" ").toLowerCase().includes(x)});
+
+ const rows=inventory.filter(r=>{
+  const c=r.cards||{},x=q.toLowerCase().trim();
+  return !x||[c.english_name,c.name,c.set_name,c.card_number,c.language,c.cardmarket_product_id,c.set_code].filter(Boolean).join(" ").toLowerCase().includes(x)
+ });
+
+ function norm(v){return String(v||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}
+
+ async function getTcgdexCard(c){
+  const setKey=String(c.set_id||c.set_code||"").trim();
+  if(!setKey)return null;
+  try{
+   const sr=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(setKey)}`);
+   if(!sr.ok)return null;
+   const setData=await sr.json();
+   const local=String(c.card_number||"").split("/")[0].replace(/^0+/,"")||"";
+   const cards=setData.cards||[];
+   let summary=cards.find(x=>String(x.localId||"").replace(/^0+/,"")===local);
+   if(!summary && c.english_name)summary=cards.find(x=>norm(x.name)===norm(c.english_name));
+   if(!summary)return {setData,summary:null,detail:null};
+   let detail=summary;
+   const cardId=summary.id||`${setKey}-${summary.localId}`;
+   const cr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(cardId)}`);
+   if(cr.ok)detail=await cr.json();
+   return {setData,summary,detail};
+  }catch(_){return null}
+ }
 
  async function findMatches(r){
   const c=r.cards||{};
   setSelected(r);setBusy(true);setMsg("");setMatches([]);
+  const wanted=String(c.english_name||c.name||"").trim().replace(/[%_]/g,"");
+  if(!wanted){setMsg("This card has no English Pokémon name to search for.");setBusy(false);return}
 
-  // Cardmarket's downloaded product catalogue does NOT contain card_number or language.
-  // It contains idProduct, English name, category, expansion ID and date added.
-  // The previous matcher incorrectly filtered on card_number, which is why it returned zero rows.
-  const wanted=String(c.english_name||c.name||"").trim();
-  const safeWanted=wanted.replace(/[%_]/g,"");
-  if(!safeWanted){setMsg("This card has no English Pokémon name to search for.");setBusy(false);return}
+  const tcg=await getTcgdexCard(c);
+  const releaseDate=tcg?.setData?.releaseDate?new Date(tcg.setData.releaseDate):null;
+  const tcgAttacks=(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean);
 
-  let {data,error}=await supabase
-    .from("cardmarket_catalogue")
+  let {data,error}=await supabase.from("cardmarket_catalogue")
     .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
-    .eq("category_id",51)
-    .ilike("name",`%${safeWanted}%`)
-    .limit(100);
-
-  // If the full name produced nothing, fall back to the first meaningful token.
-  if(!error && (!data||!data.length)){
-   const token=safeWanted.split(/\s+/)[0];
-   if(token.length>=2){
-    const retry=await supabase.from("cardmarket_catalogue")
-      .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
-      .eq("category_id",51)
-      .ilike("name",`%${token}%`)
-      .limit(100);
-    data=retry.data;error=retry.error;
-   }
-  }
+    .eq("category_id",51).ilike("name",`%${wanted}%`).limit(300);
 
   if(error){
    setMsg(error.code==="42P01"?"Cardmarket catalogue table is not installed yet.":error.message);
-   setBusy(false);return;
+   setBusy(false);return
   }
 
-  const number=String(c.card_number||"").replace(/^0+/,"").split("/")[0];
-  const setName=String(c.set_name||"").toLowerCase();
-  const lang=String(c.language||"").toLowerCase();
+  const groups=new Map();
+  for(const x of (data||[])){const k=String(x.expansion_id||"");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(x)}
+  const expansionDistance=new Map();
+  for(const [k,items] of groups){
+   const dates=items.map(x=>x.date_added&&x.date_added!=="0000-00-00 00:00:00"?new Date(String(x.date_added).replace(" ","T")):null).filter(d=>d&&!Number.isNaN(d.getTime()));
+   let dist=Infinity;
+   if(releaseDate&&dates.length)dist=Math.min(...dates.map(d=>Math.abs(d-releaseDate)/86400000));
+   expansionDistance.set(k,dist);
+  }
 
   const ranked=(data||[]).map(x=>{
-   const hay=String(x.name||"").toLowerCase();
-   let score=0;
-   if(hay===safeWanted.toLowerCase())score+=100;
-   else if(hay.startsWith(safeWanted.toLowerCase()+" "))score+=80;
-   else if(hay.includes(safeWanted.toLowerCase()))score+=60;
-   // The product catalogue does not expose card number/language, so do not pretend
-   // these can be scored from this file.
-   return {...x,score,display_language:lang||"Not in catalogue",display_number:number||"Not in catalogue",display_set:setName||"Not mapped yet"};
+   const pn=norm(x.name);let score=0;
+   if(pn===norm(wanted))score+=100;else if(pn.startsWith(norm(wanted)+" "))score+=80;else if(pn.includes(norm(wanted)))score+=55;
+   const dist=expansionDistance.get(String(x.expansion_id));
+   if(Number.isFinite(dist))score+=Math.max(0,70-Math.min(70,dist*1.5));
+   if(tcgAttacks.length){
+    const hay=norm(x.name),hits=tcgAttacks.filter(a=>hay.includes(a)).length;
+    score+=hits*35;if(hits===tcgAttacks.length)score+=30;
+   }
+   return {...x,score,expansion_distance_days:Number.isFinite(dist)?Math.round(dist*10)/10,tcg_set:tcg?.setData?.name||c.set_name||"",tcg_attacks:tcgAttacks};
   }).sort((a,b)=>b.score-a.score);
 
   setMatches(ranked);setBusy(false);
  }
 
  async function saveMatch(m){
-  if(!selected)return;
-  setBusy(true);setMsg("");
+  if(!selected)return;setBusy(true);setMsg("");
   const {error}=await supabase.from("cards").update({
-   cardmarket_product_id:String(m.id_product),
-   cardmarket_name:m.name||null,
-   cardmarket_expansion:String(m.expansion_id||""),
-   cardmarket_language:selected.cards?.language||null,
-   cardmarket_url:null
+   cardmarket_product_id:String(m.id_product),cardmarket_name:m.name||null,
+   cardmarket_expansion:String(m.expansion_id||""),cardmarket_language:selected.cards?.language||null,cardmarket_url:null
   }).eq("id",selected.cards.id);
-  if(error)setMsg(error.message);
-  else{setSelected(null);setMatches([]);setMsg("Cardmarket match saved.");await onDone?.()}
+  if(error)setMsg(error.message);else{setSelected(null);setMatches([]);setMsg("Cardmarket match saved.");await onDone?.()}
   setBusy(false);
  }
 
  return <div className="panel">
-  <div className="heading" style={{marginTop:0}}>
-   <div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Search the imported Cardmarket product catalogue by the English Pokémon name.</p></div>
-  </div>
+  <div className="heading" style={{marginTop:0}}><div><span className="eyebrow">CARDMARKET</span><h2>Product matching</h2><p>Resolve the Pokémon, set and card number, then match the corresponding Cardmarket product.</p></div></div>
   <div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search Pokémon, set, number or language..."/><small>{rows.filter(r=>r.cards?.cardmarket_product_id).length}/{rows.length} shown cards matched</small></div>
-  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}>
-   <div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div>
-   <div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>findMatches(r)} disabled={busy}>{r.cards?.cardmarket_product_id?"Find again":"Find match"}</button></div>
-  </div>)}</div>
-
-  {selected&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setMatches([])}}}>
-   <div className="modal" onMouseDown={e=>e.stopPropagation()}>
-    <div className="modalhead"><div><span className="eyebrow">CARDMARKET SEARCH</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setMatches([])}}>×</button></div>
-    <p>The downloaded Cardmarket catalogue gives us the product ID and English product name, but not card number or language. We're therefore showing name matches now; we'll add the expansion/metacard mapping next so Japanese and other languages can be narrowed correctly.</p>
-    {busy&&<div className="noresults">Searching Cardmarket catalogue…</div>}
-    {!busy&&!matches.length&&!msg&&<div className="noresults">No products with that Pokémon name were found.</div>}
-    {!busy&&matches.map((m,i)=><div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}>
-     <div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>Product {m.id_product} · Cardmarket expansion ID {m.expansion_id||"unknown"} · Metacard {m.metacard_id||"unknown"}</small></div></div>
-     <div className="rowright"><span>{m.score} match</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div>
-    </div>)}
-    {msg&&<div className="alert">{msg}</div>}
-    <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setMatches([])}}>Close</button><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
-   </div>
-  </div>}
+  <div className="list">{rows.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain"><div><b>{r.cards?.english_name||r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number} · {r.cards?.language}</small></div></div><div className="rowright"><span>{r.cards?.cardmarket_product_id?`CM ${r.cards.cardmarket_product_id}`:"Not matched"}</span><button className="editbtn" onClick={()=>findMatches(r)} disabled={busy}>{r.cards?.cardmarket_product_id?"Find again":"Find match"}</button></div></div>)}</div>
+  {selected&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget){setSelected(null);setMatches([])}}}><div className="modal" onMouseDown={e=>e.stopPropagation()}>
+   <div className="modalhead"><div><span className="eyebrow">CARDMARKET SEARCH</span><h2>{selected.cards?.english_name||selected.cards?.name}</h2><small>{selected.cards?.set_name} · {selected.cards?.card_number} · {selected.cards?.language}</small></div><button className="x" onClick={()=>{setSelected(null);setMatches([])}}>×</button></div>
+   <p>Results combine TCGdex set/card data with Cardmarket's product ID, expansion ID, metacard ID and product name. Cardmarket's catalogue does not directly expose language or collector number.</p>
+   {busy&&<div className="noresults">Resolving set/card and searching Cardmarket catalogue…</div>}
+   {!busy&&!matches.length&&!msg&&<div className="noresults">No products with that Pokémon name were found.</div>}
+   {!busy&&matches.slice(0,30).map((m,i)=><div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>Product {m.id_product} · Expansion {m.expansion_id||"unknown"} · Metacard {m.metacard_id||"unknown"} · {m.expansion_distance_days==null?"release date unavailable":`${m.expansion_distance_days}d from set release`}</small></div></div><div className="rowright"><span>{Math.round(m.score)} match</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div></div>)}
+   {msg&&<div className="alert">{msg}</div>}
+   <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setMatches([])}}>Close</button><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
+  </div></div>}
  </div>
 }
 function BatchTool({inventory,onDone}){
