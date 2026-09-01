@@ -92,8 +92,23 @@ function Admin({session,publicSite}){
   const label=`${row.cards?.name||"this card"}${row.cards?.set_name?` — ${row.cards.set_name}`:""}`;
   if(!window.confirm(`Delete ${label} from your inventory? This cannot be undone.`))return;
   setBusy(true);setMsg("");
+  const cardId=row.cards?.id||row.card_id;
   const {error}=await supabase.from("inventory").delete().eq("id",row.id);
   if(error){setMsg(error.message);setBusy(false);return}
+
+  // The inventory row and the card master record are separate.
+  // If this was the last inventory row for that card, remove the orphaned
+  // card master record too; otherwise a later Add Card hits the cards UNIQUE
+  // constraint even though the card is no longer visible in inventory.
+  if(cardId){
+   const {data:remaining,error:re}=await supabase.from("inventory").select("id").eq("card_id",cardId).limit(1);
+   if(re){setMsg(re.message);setBusy(false);return}
+   if(!remaining?.length){
+    const {error:de}=await supabase.from("cards").delete().eq("id",cardId);
+    if(de){setMsg(de.message);setBusy(false);return}
+   }
+  }
+
   await load();
   setMsg("Inventory row deleted.");
   setBusy(false);
