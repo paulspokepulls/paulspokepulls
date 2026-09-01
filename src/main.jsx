@@ -394,6 +394,30 @@ function CardmarketMatcher({inventory,onDone}){
   const c=r.cards||{},wanted=String(c.english_name||c.name||"").trim().replace(/[%_]/g,"");
   if(!wanted)return [];
   const tcg=await getTcgdexCard(c);
+  // Prefer TCGdex's exact Cardmarket product mapping. This avoids ambiguous
+  // name/metacard matching (e.g. Minun 061 vs Minun 194).
+  const detailed=Array.isArray(tcg?.detail?.variants_detailed)?tcg.detail.variants_detailed:[];
+  const wantedVariant=String(c.variant||"Normal").toLowerCase();
+  const preferred=wantedVariant.includes("reverse")?["reverse"]:["normal"];
+  const exactVariant=detailed.find(v=>preferred.includes(String(v?.type||"").toLowerCase())&&v?.pricing?.cardmarket?.idProduct)
+    || detailed.find(v=>v?.pricing?.cardmarket?.idProduct);
+  const exactId=exactVariant?.pricing?.cardmarket?.idProduct;
+  if(exactId){
+   const {data,error}=await supabase.from("cardmarket_catalogue")
+    .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
+    .eq("id_product",String(exactId)).maybeSingle();
+   if(error)throw error;
+   const price=prices[String(exactId)]||null;
+   if(data)return [{...data,score:1000,exact_tcgdex_match:true,price,
+    expansion_distance_days:null,tcg_set:tcg?.setData?.name||c.set_name||"",
+    tcg_attacks:(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean)}];
+   // Local Cardmarket catalogue may be stale, but TCGdex still gives us the
+   // exact product ID. Return it so manual/auto matching can use the exact ID.
+   return [{id_product:String(exactId),name:null,category_id:"51",category_name:"Pokemon Singles",
+    expansion_id:null,metacard_id:null,date_added:null,score:1000,exact_tcgdex_match:true,price,
+    expansion_distance_days:null,tcg_set:tcg?.setData?.name||c.set_name||"",
+    tcg_attacks:(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean)}];
+  }
   const releaseDate=tcg?.setData?.releaseDate?new Date(tcg.setData.releaseDate):null;
   const tcgAttacks=(tcg?.detail?.attacks||[]).map(a=>norm(a.name)).filter(Boolean);
   const terms=[wanted,c.name].map(x=>String(x||"").trim().replace(/[%_]/g,"")).filter(Boolean);
@@ -454,7 +478,7 @@ function CardmarketMatcher({inventory,onDone}){
   for(const r of targets){
    try{
     const ranked=await searchCardmarketMatches(r),top=ranked[0],second=ranked[1];
-    const confident=!!top&&top.score>=140&&(!second||top.score-second.score>=15);
+    const confident=!!top&&(top.exact_tcgdex_match||top.score>=140&&(!second||top.score-second.score>=15));
     if(!confident){skipped++;continue}
     const {error}=await supabase.from("cards").update({cardmarket_product_id:String(top.id_product),cardmarket_name:top.name||null,cardmarket_expansion:String(top.expansion_id||""),cardmarket_language:r.cards?.language||null,cardmarket_url:null}).eq("id",r.cards.id);
     if(error){skipped++;if(!firstError)firstError=error.message}else matched++;
@@ -489,7 +513,7 @@ function CardmarketMatcher({inventory,onDone}){
    <p>Results combine TCGdex set/card data with Cardmarket's product ID, expansion ID, metacard ID and product name. Cardmarket's catalogue does not directly expose language or collector number.</p>
    {busy&&<div className="noresults">Resolving set/card and searching Cardmarket catalogue…</div>}
    {!busy&&!matches.length&&!msg&&<div className="noresults">No products with that Pokémon name were found.</div>}
-   {!busy&&matches.slice(0,30).map((m,i)=>{const p=prices[String(m.id_product)];return <div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Unnamed product"}</b><small>Product {m.id_product} · Expansion {m.expansion_id||"unknown"} · Metacard {m.metacard_id||"unknown"} · {m.expansion_distance_days==null?"release date unavailable":`${m.expansion_distance_days}d from set release`}{p?` · Trend £${Number(p.trend||0).toFixed(2)} · Low £${Number(p.low||0).toFixed(2)}`:" · No price guide record"}</small></div></div><div className="rowright"><span>{Math.round(m.score)} match</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div></div>})}
+   {!busy&&matches.slice(0,30).map((m,i)=>{const p=m.price||prices[String(m.id_product)];return <div className="row" key={`${m.id_product}-${i}`} style={{marginTop:8}}><div className="rowmain"><div><b>{m.name||"Exact TCGdex Cardmarket match"}</b><small>{m.exact_tcgdex_match?"Exact TCGdex mapping · ":""}Product {m.id_product} · {m.expansion_id?`Expansion ${m.expansion_id} · `:""}{m.metacard_id?`Metacard ${m.metacard_id} · `:""}{m.expansion_distance_days!=null?`${m.expansion_distance_days}d from set release`:""}{p?` · Trend £${Number(p.trend||0).toFixed(2)} · Low £${Number(p.low||0).toFixed(2)}`:" · No price guide record"}</small></div></div><div className="rowright"><span>{m.exact_tcgdex_match?"EXACT":`${Math.round(m.score)} match`}</span><button onClick={()=>saveMatch(m)} disabled={busy}>Use this match</button></div></div>})}
    {msg&&<div className="alert">{msg}</div>}
    <div className="modalactions"><button className="ghost" onClick={()=>{setSelected(null);setMatches([])}}>Close</button><a href="https://www.cardmarket.com/en/Pokemon/Products/Singles" target="_blank" rel="noreferrer">Open Cardmarket</a></div>
   </div></div>}
