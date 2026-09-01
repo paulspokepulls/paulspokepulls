@@ -411,7 +411,7 @@ function CardmarketMatcher({inventory,onDone}){
     const hay=norm(x.name),hits=tcgAttacks.filter(a=>hay.includes(a)).length;
     score+=hits*35;if(hits===tcgAttacks.length)score+=30;
    }
-   return {...x,score,expansion_distance_days:Number.isFinite(dist)?Math.round(dist*10)/10,tcg_set:tcg?.setData?.name||c.set_name||"",tcg_attacks:tcgAttacks};
+   return {...x,score,expansion_distance_days:Number.isFinite(dist)?Math.round(dist*10)/10:null,tcg_set:tcg?.setData?.name||c.set_name||"",tcg_attacks:tcgAttacks};
   }).sort((a,b)=>b.score-a.score);
 
   setMatches(ranked);setBusy(false);
