@@ -399,9 +399,18 @@ function CardmarketMatcher({inventory,onDone}){
   const terms=[wanted,c.name].map(x=>String(x||"").trim().replace(/[%_]/g,"")).filter(Boolean);
   const all=new Map();
   for(const term of [...new Set(terms.map(norm))]){
-   const {data,error}=await supabase.from("cardmarket_catalogue").select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added").eq("category_id",51).ilike("name",`%${term}%`).limit(300);
+   // Cardmarket names contain the Pokémon name followed by bracketed
+   // attack/ability text, e.g. "Pikachu [Attack | Attack]".
+   // Search the name first, then filter to Pokémon Singles in JavaScript.
+   // This avoids category_id type/schema differences causing valid searches
+   // to return zero rows.
+   const {data,error}=await supabase.from("cardmarket_catalogue")
+    .select("id_product,name,category_id,category_name,expansion_id,metacard_id,date_added")
+    .ilike("name",`%${term}%`).limit(500);
    if(error)throw error;
-   for(const x of (data||[]))all.set(String(x.id_product),x);
+   for(const x of (data||[])){
+    if(String(x.category_id)==="51")all.set(String(x.id_product),x);
+   }
   }
   const data=[...all.values()],groups=new Map();
   for(const x of data){const k=String(x.expansion_id||"");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(x)}
@@ -413,8 +422,12 @@ function CardmarketMatcher({inventory,onDone}){
   }
   const wn=norm(wanted);
   return data.map(x=>{
-   const pn=norm(x.name);let score=0;
-   if(pn===wn)score+=100;else if(pn.startsWith(wn+" "))score+=80;else if(pn.includes(wn))score+=55;
+   // Ignore Cardmarket's bracketed attack/ability suffix for the main name
+   // comparison, while still using the full name for attack matching below.
+   const rawName=String(x.name||"");
+   const baseName=rawName.split("[")[0].trim();
+   const pn=norm(baseName),fullPn=norm(rawName);let score=0;
+   if(pn===wn)score+=120;else if(pn.startsWith(wn+" "))score+=95;else if(fullPn.includes(wn))score+=55;
    const dist=expansionDistance.get(String(x.expansion_id));
    if(Number.isFinite(dist))score+=Math.max(0,70-Math.min(70,dist*1.5));
    if(tcgAttacks.length){const hay=norm(x.name),hits=tcgAttacks.filter(a=>hay.includes(a)).length;score+=hits*35;if(hits===tcgAttacks.length)score+=30}
