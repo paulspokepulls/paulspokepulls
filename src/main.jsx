@@ -9,7 +9,6 @@ const demo=[{id:"d1",name:"Bidoof",set_name:"Brilliant Stars",card_number:"111/1
 
 function nav(path){history.pushState({}, "", path);dispatchEvent(new PopStateEvent("popstate"))}
 
-
 function App(){
  const [admin,setAdmin]=useState(location.pathname.startsWith("/admin")), [session,setSession]=useState(null);
  useEffect(()=>{const f=()=>setAdmin(location.pathname.startsWith("/admin"));addEventListener("popstate",f);return()=>removeEventListener("popstate",f)},[]);
