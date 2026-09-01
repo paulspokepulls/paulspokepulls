@@ -370,23 +370,34 @@ function CardmarketMatcher({inventory,onDone}){
 
  function norm(v){return String(v||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}
 
+ function tcgdexLanguage(c){
+  const raw=String(c?.language||"").trim().toLowerCase();
+  const map={english:"en",en:"en",french:"fr",fr:"fr",spanish:"es",es:"es",italian:"it",it:"it",portuguese:"pt",pt:"pt",
+   "brazilian portuguese":"pt-br","portuguese (brazil)":"pt-br","pt-br":"pt-br",german:"de",de:"de",dutch:"nl",nl:"nl",
+   polish:"pl",pl:"pl",russian:"ru",ru:"ru",japanese:"ja",ja:"ja",korean:"ko",ko:"ko",chinese:"zh-tw",
+   "traditional chinese":"zh-tw","simplified chinese":"zh-cn","chinese traditional":"zh-tw","chinese simplified":"zh-cn",
+   "zh-tw":"zh-tw","zh-cn":"zh-cn",indonesian:"id",id:"id",thai:"th",th:"th"};
+  return map[raw]||"en";
+ }
+
  async function getTcgdexCard(c){
   const setKey=String(c.set_id||c.set_code||"").trim();
   if(!setKey)return null;
+  const lang=tcgdexLanguage(c);
   try{
-   const sr=await fetch(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(setKey)}`);
+   const sr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/sets/${encodeURIComponent(setKey)}`);
    if(!sr.ok)return null;
    const setData=await sr.json();
-   const local=String(c.card_number||"").split("/")[0].replace(/^0+/,"")||"";
+   const local=String(c.card_number||"").split("/")[0].replace(/^0+/g,"")||"";
    const cards=setData.cards||[];
-   let summary=cards.find(x=>String(x.localId||"").replace(/^0+/,"")===local);
+   let summary=cards.find(x=>String(x.localId||"").replace(/^0+/g,"")===local);
    if(!summary && c.english_name)summary=cards.find(x=>norm(x.name)===norm(c.english_name));
-   if(!summary)return {setData,summary:null,detail:null};
+   if(!summary)return {setData,summary:null,detail:null,lang};
    let detail=summary;
    const cardId=summary.id||`${setKey}-${summary.localId}`;
-   const cr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(cardId)}`);
+   const cr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards/${encodeURIComponent(cardId)}`);
    if(cr.ok)detail=await cr.json();
-   return {setData,summary,detail};
+   return {setData,summary,detail,lang};
   }catch(_){return null}
  }
 
