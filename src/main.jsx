@@ -803,6 +803,14 @@ function CardScanner(){
         return;
       }
       streamRef.current=stream;
+      // Attach the stream to the existing video element before switching the
+      // UI into camera mode. This avoids a mobile-browser race where React
+      // mounts the <video> and autoPlay fires before srcObject is attached.
+      if(videoRef.current){
+        videoRef.current.muted=true;
+        videoRef.current.playsInline=true;
+        videoRef.current.srcObject=stream;
+      }
       setCameraOn(true);
     }catch(e){
       if(generation===cameraGenerationRef.current){
@@ -1094,7 +1102,7 @@ function CardScanner(){
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
           {cameraOn ? <div className="scanner-video-layer">
-            <video ref={videoRef} playsInline muted autoPlay className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
+            <video ref={videoRef} playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
             {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
           </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
