@@ -698,10 +698,16 @@ function scannerScript(text){
   if(/\p{Script=Cyrillic}/u.test(s))return "ru";
   return "latin";
 }
-async function scannerFindByNumber(lang,numberInfo){
+async function scannerFindByNumber(lang,numberInfo,nameCandidates=[]){
   if(!numberInfo?.localId)return [];
-  const ids=[String(numberInfo.localId),scannerLocalIdKey(numberInfo.localId)].filter((x,i,a)=>x&&a.indexOf(x)===i);
+  const wantedLocal=scannerLocalIdKey(numberInfo.localId);
+  const wantedTotal=Number(numberInfo.total);
+  const wantedNames=(nameCandidates||[]).map(scannerNormalizeText).filter(Boolean);
+  const ids=[String(numberInfo.localId),wantedLocal].filter((x,i,a)=>x&&a.indexOf(x)===i);
   const found=new Map();
+
+  // TCGdex supports field filtering on card lists. Use localId as the primary
+  // lookup instead of asking the name matcher to search the whole database.
   for(const id of ids){
     try{
       const params=new URLSearchParams();
@@ -713,10 +719,36 @@ async function scannerFindByNumber(lang,numberInfo){
       const list=await r.json();
       if(!Array.isArray(list))continue;
       for(const x of list){
-        if(scannerLocalIdKey(x.localId)!==scannerLocalIdKey(numberInfo.localId))continue;
+        if(scannerLocalIdKey(x.localId)!==wantedLocal)continue;
         found.set(`${lang}:${x.id}`,x);
       }
-    }catch(_){}
+    }catch(_){ }
+  }
+
+  // Fallback: filtering can vary between API deployments. Pull the language's
+  // sets and inspect their card summaries if the direct localId query returned
+  // nothing. This is slower, but only runs when the fast path misses.
+  if(!found.size){
+    try{
+      const sr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/sets`);
+      if(sr.ok){
+        const sets=await sr.json();
+        for(const set of (Array.isArray(sets)?sets:[])){
+          try{
+            const cr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/sets/${encodeURIComponent(set.id)}`);
+            if(!cr.ok)continue;
+            const setData=await cr.json();
+            for(const x of (setData.cards||[])){
+              if(scannerLocalIdKey(x.localId)!==wantedLocal)continue;
+              found.set(`${lang}:${x.id}`,{...x,set:setData});
+            }
+          }catch(_){ }
+          // Once we have several candidates, don't hammer the API unnecessarily.
+          // The normal number lookup should be used whenever the API supports it.
+          if(found.size>=100)break;
+        }
+      }
+    }catch(_){ }
   }
 
   const details=await Promise.all([...found.values()].map(async x=>{
@@ -724,16 +756,45 @@ async function scannerFindByNumber(lang,numberInfo){
     try{
       const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards/${encodeURIComponent(x.id)}`);
       if(r.ok)detail={...x,...await r.json()};
-    }catch(_){}
+    }catch(_){ }
+
     const total=Number(detail?.set?.cardCount?.total);
     const official=Number(detail?.set?.cardCount?.official);
+    const localName=scannerNormalizeText(detail?.name||x?.name||"");
     let score=300;
-    if(Number.isFinite(total)&&numberInfo.total&&total===Number(numberInfo.total))score+=250;
-    else if(Number.isFinite(official)&&numberInfo.total&&official===Number(numberInfo.total))score+=180;
-    else if(numberInfo.total)score-=80;
+
+    // Collector number is the hard identity anchor.
+    if(scannerLocalIdKey(detail?.localId)===wantedLocal)score+=300;
+    else score-=1000;
+
+    // Denominator is an extremely strong discriminator between sets.
+    if(Number.isFinite(total)&&Number.isFinite(wantedTotal)&&total===wantedTotal)score+=400;
+    else if(Number.isFinite(official)&&Number.isFinite(wantedTotal)&&official===wantedTotal)score+=300;
+    else if(Number.isFinite(wantedTotal))score-=120;
+
+    // The localized Pokémon name is the other major signal. Exact Japanese
+    // name + exact number/denominator should beat every unrelated #083 card.
+    let exactName=false;
+    let partialName=false;
+    for(const wanted of wantedNames){
+      if(localName===wanted){exactName=true;break;}
+      if(wanted.length>=3&&(localName.includes(wanted)||wanted.includes(localName)))partialName=true;
+    }
+    if(exactName)score+=1000;
+    else if(partialName)score+=250;
+
     if(detail?.category==="Pokemon")score+=15;
-    return {...detail,scannerScore:score,scannerLanguage:lang,scannerLanguageName:lang==="ja"?"Japanese":lang==="zh-tw"?"Chinese Traditional":lang==="ru"?"Russian":"English"};
+    return {
+      ...detail,
+      scannerScore:score,
+      scannerLanguage:lang,
+      scannerLanguageName:lang==="ja"?"Japanese":lang==="zh-tw"?"Chinese Traditional":lang==="ru"?"Russian":"English",
+      scannerExactLocalizedName:exactName,
+      scannerNumberConfirmed:scannerLocalIdKey(detail?.localId)===wantedLocal,
+      scannerDenominatorConfirmed:(Number.isFinite(total)&&Number.isFinite(wantedTotal)&&total===wantedTotal)||(Number.isFinite(official)&&Number.isFinite(wantedTotal)&&official===wantedTotal)
+    };
   }));
+
   return details.sort((a,b)=>b.scannerScore-a.scannerScore);
 }
 
@@ -1036,7 +1097,7 @@ function CardScanner(){
       // For non-Latin cards, an exact collector number plus set card-count
       // match is far safer than trying to translate/fuzz a Japanese OCR name.
       if(numberInfo&&(script==="ja"||script==="zh-tw"||script==="ru")){
-        const numberHits=await scannerFindByNumber(script,numberInfo);
+        const numberHits=await scannerFindByNumber(script,numberInfo,nameCandidates);
         if(numberHits.length){
           const detailed=await Promise.all(numberHits.slice(0,12).map(async x=>{
             let englishName=x.name||"";
@@ -1054,12 +1115,20 @@ function CardScanner(){
           }));
           const best=detailed[0];
           const second=detailed[1];
-          // A matching denominator is a strong confirmation. If it leaves
-          // multiple printings tied, show them rather than guessing.
-          const denominatorConfirmed=Number.isFinite(Number(numberInfo.total))&&Number(best?.set?.cardCount?.total)===Number(numberInfo.total);
-          const clear=denominatorConfirmed&&(detailed.length===1||best.scannerScore-(second?.scannerScore||0)>=80);
+          const exactLocalized=detailed.filter(x=>x.scannerExactLocalizedName&&x.scannerNumberConfirmed);
+          const denominatorConfirmed=!!best?.scannerDenominatorConfirmed;
+          // If OCR gave us an exact localized Pokémon name as well as the
+          // collector number, require that combination before auto-selecting.
+          // Otherwise use number + denominator + a clear score gap.
+          const winner=exactLocalized.length===1?exactLocalized[0]:best;
+          const winnerSecond=exactLocalized.length===1?detailed.find(x=>x.id!==winner.id):second;
+          const winnerDenominator=!!winner?.scannerDenominatorConfirmed;
+          const clear=!!winner&&winnerDenominator&&(
+            (exactLocalized.length===1) ||
+            (detailed.length===1||winner.scannerScore-(winnerSecond?.scannerScore||0)>=250)
+          );
           setCandidates(detailed);
-          if(clear)setIdentified(best);
+          if(clear)setIdentified(winner);
           else if(!detailed.length)setCandidates([]);
           return;
         }
@@ -1105,6 +1174,22 @@ function CardScanner(){
       }
 
       if(!hits.length)throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
+
+      // For Japanese/Asian cards, never let a random OCR phrase elsewhere in
+      // the crop outrank the actual Pokémon name. If we have a collector
+      // number, first restrict the candidates to that localId. Then, when an
+      // exact localized name exists, keep only that exact-name result.
+      if(numberInfo&&(script==="ja"||script==="zh-tw"||script==="ru")){
+        const sameNumber=hits.filter(x=>scannerLocalIdKey(x.localId)===scannerLocalIdKey(numberInfo.localId));
+        if(sameNumber.length){
+          const exactLocalized=sameNumber.filter(x=>{
+            const xn=scannerNormalizeText(x.name);
+            return nameCandidates.some(n=>scannerNormalizeText(n)===xn);
+          });
+          hits.length=0;
+          hits.push(...(exactLocalized.length?exactLocalized:sameNumber));
+        }
+      }
 
       const unique=new Map();
       for(const hit of hits){
