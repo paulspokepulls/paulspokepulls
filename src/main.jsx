@@ -789,12 +789,10 @@ function CardScanner(){
     let worker=null;
     try{
       const Tesseract=await loadTesseract();
-      // English OCR is surprisingly good at Latin-script Pokémon names, even
-      // when the card itself is German/French/Spanish/etc. Japanese and
-      // Traditional Chinese need their own character models. We identify the
-      // actual card language below by matching the OCR against each TCGdex
-      // language rather than assuming Latin text means English.
-      worker=await Tesseract.createWorker("eng+jpn+chi_tra",1,{
+      // Keep the proven OCR engine: English handles Latin-script European names,
+      // while Japanese is available for Japanese cards. We do language detection
+      // from the OCR script and then search TCGdex in the relevant languages.
+      worker=await Tesseract.createWorker("jpn+eng",1,{
         logger:m=>{
           if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
         }
@@ -807,33 +805,35 @@ function CardScanner(){
         scannerCropDataUrl(shot,"card")
       ]);
       setDebugCrops({name:nameImage,number:numberImage,card:cardImage});
-      const [top,bottom]=await Promise.all([worker.recognize(nameImage),worker.recognize(numberImage)]);
+
+      const [top,bottom]=await Promise.all([
+        worker.recognize(nameImage),
+        worker.recognize(numberImage)
+      ]);
       const topText=top?.data?.text||"",bottomText=bottom?.data?.text||"";
       const combined=`${topText}\n${bottomText}`;
       setOcrText(combined);
 
       const nameCandidates=scannerNameCandidates(topText);
       const rawNumber=scannerExtractNumber(bottomText)||scannerExtractNumber(combined);
-      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^[A-Z]{1,5}/i,"").replace(/^0+/,""):"";
+      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^[A-Z]{1,5}/i,"").replace(/^0+/ ,""):"";
       const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
       if(!nameCandidates.length&&!rawNumber)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
 
       const hasKana=/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(topText);
       const hasHan=/\p{Script=Han}/u.test(topText);
       const hasCyrillic=/\p{Script=Cyrillic}/u.test(topText);
-
-      // Script gives us a strong first choice, but Latin cards deliberately
-      // search every supported European TCGdex language. This is what lets
-      // Glurak, Dracaufeu, etc. identify as German/French rather than being
-      // forced through the English catalogue.
       let languages;
       if(hasKana)languages=["ja"];
       else if(hasHan)languages=["zh-tw","ja"];
       else if(hasCyrillic)languages=["ru"];
       else languages=["en","de","fr","es","it","pt","pl"];
 
-      const languageNames={en:"English",de:"German",fr:"French",es:"Spanish",it:"Italian",pt:"Portuguese",pl:"Polish",ru:"Russian",ja:"Japanese","zh-tw":"Chinese"};
+      const languageNames={en:"English",de:"German",fr:"French",es:"Spanish",it:"Italian",pt:"Portuguese",pl:"Polish",ru:"Russian",ja:"Japanese","zh-tw":"Chinese Traditional"};
       const hits=[];
+
+      // Search every plausible TCGdex language for Latin-script cards. This is
+      // what lets names such as Glurak/Dracaufeu resolve without translating OCR.
       for(const lang of languages){
         for(const candidate of nameCandidates.slice(0,8)){
           try{
@@ -854,24 +854,26 @@ function CardScanner(){
                 if(count)score+=Math.min(55,count*20);
               }
               if(numberOnly){
-                const local=String(x.localId||"").replace(/^0+/,"");
+                const local=String(x.localId||"").replace(/^0+/ ,"");
                 if(local===numberOnly)score+=120;
                 if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=120;
               }
               if(score>=40)hits.push({...x,scannerScore:score,scannerLanguage:lang,scannerLanguageName:languageNames[lang]||lang,scannerOcrName:candidate});
             }
-          }catch(_){}
+          }catch(_){ }
         }
       }
 
       if(!hits.length)throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
 
-      // Keep the strongest language/name interpretation for each exact card.
       const unique=new Map();
       for(const hit of hits){
+        // Same physical printing may appear in several OCR candidates; retain
+        // the strongest hit for each language/card combination.
         const key=`${hit.scannerLanguage}:${hit.id}`;
         if(!unique.has(key)||hit.scannerScore>unique.get(key).scannerScore)unique.set(key,hit);
       }
+
       let ranked=[...unique.values()].sort((a,b)=>b.scannerScore-a.scannerScore);
       const bestScore=ranked[0]?.scannerScore||0;
       ranked=ranked.filter(x=>x.scannerScore>=bestScore-25).slice(0,12);
@@ -881,7 +883,7 @@ function CardScanner(){
         try{
           const dr=await fetch(`https://api.tcgdex.net/v2/${x.scannerLanguage}/cards/${encodeURIComponent(x.id)}`);
           if(dr.ok)detail={...x,...await dr.json()};
-        }catch(_){}
+        }catch(_){ }
         let englishName=detail.name||x.name||"";
         const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
         if(x.scannerLanguage!=="en"&&dexId){
@@ -891,21 +893,21 @@ function CardScanner(){
               const species=await pr.json();
               englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
             }
-          }catch(_){}
+          }catch(_){ }
         }
         return {...detail,localName:detail.name||x.name,englishName,scannerLanguage:x.scannerLanguage,scannerLanguageName:x.scannerLanguageName,scannerScore:x.scannerScore};
       }));
 
       const finalRanked=detailed.sort((a,b)=>b.scannerScore-a.scannerScore);
       setCandidates(finalRanked);
-      // Auto-pick only when there is one clear winner. Otherwise make Paul
-      // confirm it instead of silently choosing the wrong printing/language.
+      // Only auto-select a genuinely clear winner. If two printings/languages
+      // are close, make the user choose rather than silently miscataloguing it.
       if(finalRanked.length===1||(finalRanked[0]&&finalRanked[1]&&finalRanked[0].scannerScore-finalRanked[1].scannerScore>=35))setIdentified(finalRanked[0]);
     }catch(e){
       setError(e?.message||"Could not identify the card.");
     }finally{
       setOcrBusy(false);setOcrProgress(100);
-      if(workerRef.current){try{await workerRef.current.terminate()}catch(_){}workerRef.current=null}
+      if(workerRef.current){try{await workerRef.current.terminate()}catch(_){ }workerRef.current=null}
     }
   }
 
@@ -963,9 +965,8 @@ function CardScanner(){
         {!ocrBusy&&shot&&identified&&<div className="scanner-identification">
           {identified.image?<img src={identified.image} alt={identified.name||"Identified card"}/>:null}
           <div className="scanner-identification-info">
-            <b>{identified.englishName||identified.name}</b>
-            {identified.localName&&identified.localName!==identified.englishName?<small>{identified.localName}</small>:null}
-            <small>{identified.set?.name||"Set not available"} · #{identified.localId} · {identified.scannerLanguageName||"Language unknown"}</small>
+            <b>{identified.name}</b>
+            <small>{identified.set?.name||"Set not available"} · #{identified.localId}</small>
             <small>{identified.rarity||"Rarity not available"}</small>
             <strong>✓ Exact candidate</strong>
           </div>
@@ -976,7 +977,7 @@ function CardScanner(){
           <small>OCR found multiple cards. We won't guess between different printings.</small>
           {candidates.map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c)}>
             {c.image?<img src={c.image} alt=""/>:null}
-            <span><b>{c.englishName||c.name} · #{c.localId}</b><small>{c.localName&&c.localName!==c.englishName?`${c.localName} · `:""}{c.set?.name||"Unknown set"} · {c.scannerLanguageName||"Unknown language"} · {c.rarity||"Card"}</small></span>
+            <span><b>{c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
           </button>)}
         </div>}
 
