@@ -647,42 +647,47 @@ function scannerOcrNumericToken(v){
 
 function scannerExtractNumberInfo(text){
   const s=String(text||"").normalize("NFKC").replace(/\s+/g," ");
-  // First handle the normal/clean OCR forms.
-  const cleanPatterns=[
+  const candidates=[];
+  const add=(prefix,local,total,confidence)=>{
+    local=String(local||"");total=String(total||"");
+    if(!/^\d{1,3}$/.test(local)||!/^\d{1,3}$/.test(total))return;
+    // Do not let OCR garbage such as "x/2" become a collector number.
+    if(Number(total)<5)return;
+    candidates.push({prefix:String(prefix||"").toUpperCase(),localId:local,total,display:`${String(prefix||"").toUpperCase()}${local}/${total}`,confidence});
+  };
+
+  // Clean numeric readings are strongest.
+  for(const re of [
     /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/i,
-    /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/,
-    /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\b/i
-  ];
-  for(const re of cleanPatterns){
+    /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/
+  ]){
     const m=s.match(re);
     if(!m)continue;
-    if(m.length===4)return {
-      prefix:String(m[1]).toUpperCase(),
-      localId:String(m[2]),
-      total:String(m[3]),
-      display:`${String(m[1]).toUpperCase()}${m[2]}/${m[3]}`
-    };
-    if(m.length===3)return {
-      prefix:"",
-      localId:String(m[1]),
-      total:String(m[2]),
-      display:`${m[1]}/${m[2]}`
-    };
+    if(m.length===4)add(m[1],m[2],m[3],100);
+    else add("",m[1],m[2],100);
   }
 
-  // Japanese/Asian cards are commonly returned by OCR with a few Latin
-  // substitutions around the slash, e.g. "EN0s3/106". Treat the slash as
-  // the anchor and repair only the two number tokens.
+  // Common Tesseract substitutions around the slash. Only accept the result
+  // when BOTH sides become valid numbers.
   const noisy=/([A-Za-z0-9]{1,10})\s*[\/|]\s*([A-Za-z0-9]{1,6})/g;
   let m;
   while((m=noisy.exec(s))){
     const local=scannerOcrNumericToken(m[1]);
     const total=scannerOcrNumericToken(m[2]);
     if(!local||!total||local.length>3||total.length>3)continue;
-    if(!/^\d{1,3}$/.test(local)||!/^\d{1,3}$/.test(total))continue;
-    return {prefix:"",localId:local,total,display:`${local}/${total}`};
+    add("",local,total,70);
   }
-  return null;
+
+  // If the same number appears in more than one OCR pass, its confidence is
+  // accumulated. This makes the second full-card pass useful when the first
+  // crop misreads 083 as 003.
+  const grouped=new Map();
+  for(const c of candidates){
+    const key=`${c.prefix}|${scannerLocalIdKey(c.localId)}|${c.total}`;
+    const prev=grouped.get(key);
+    grouped.set(key,prev?{...prev,confidence:prev.confidence+c.confidence}:c);
+  }
+  return [...grouped.values()].sort((a,b)=>b.confidence-a.confidence)[0]||null;
 }
 
 function scannerExtractNumber(text){
@@ -1064,23 +1069,44 @@ function CardScanner(){
       // search for unrelated Pokémon.
       const top=await worker.recognize(nameImage);
       const topText=top?.data?.text||"";
+      setOcrProgress(30);
+
+      // A slightly small/misplaced card can make the dedicated name crop miss
+      // the Pokémon name. The full card crop gives the name OCR a second chance.
+      let cardNameText="";
+      try{
+        const cardName=await worker.recognize(cardImage);
+        cardNameText=cardName?.data?.text||"";
+      }catch(_){}
       setOcrProgress(50);
 
-      // Restrict the second OCR pass to characters useful for collector
-      // numbers. This makes 083/106 much more reliable even when the name is
-      // Japanese and the OCR worker is multilingual.
+      // Collector numbers get two independent OCR passes. The dedicated crop
+      // is single-line; the full card uses sparse-text mode. We combine both
+      // results so repeated agreement wins instead of blindly trusting the
+      // first hallucinated number.
+      let bottomText="";
+      let cardNumberText="";
       try{
         await worker.setParameters({
-          tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-"
+          tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-",
+          tessedit_pageseg_mode:"7"
         });
       }catch(_){}
-      const bottom=await worker.recognize(numberImage);
-      const bottomText=bottom?.data?.text||"";
-      const combined=`${topText}\n${bottomText}`;
+      try{
+        const bottom=await worker.recognize(numberImage);
+        bottomText=bottom?.data?.text||"";
+      }catch(_){}
+      try{
+        await worker.setParameters({tessedit_pageseg_mode:"11"});
+        const cardNumber=await worker.recognize(cardImage);
+        cardNumberText=cardNumber?.data?.text||"";
+      }catch(_){}
+
+      const combined=`${topText}\n${cardNameText}\n${bottomText}\n${cardNumberText}`;
       setOcrText(combined);
 
-      const nameCandidates=scannerNameCandidates(topText);
-      const numberInfo=scannerExtractNumberInfo(bottomText)||scannerExtractNumberInfo(combined);
+      const nameCandidates=scannerNameCandidates(`${topText}\n${cardNameText}`);
+      const numberInfo=scannerExtractNumberInfo(combined);
       const rawNumber=numberInfo?.display||"";
       if(!nameCandidates.length&&!numberInfo)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
 
