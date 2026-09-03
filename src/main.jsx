@@ -605,58 +605,317 @@ function BatchTool({inventory,onDone}){
   {msg&&<div className="alert" style={{marginTop:12}}>{msg}</div>}
  </div>
 }
-function CardScanner(){
- const videoRef=React.useRef(null),streamRef=React.useRef(null);
- const [cameraOn,setCameraOn]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
- async function startCamera(){setError("");setShot(null);setBusy(true);try{if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});streamRef.current=stream;setCameraOn(true)}catch(e){setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");setCameraOn(false)}finally{setBusy(false)}}
- useEffect(()=>{if(!cameraOn||!streamRef.current)return;const v=videoRef.current;if(!v)return;v.srcObject=streamRef.current;const play=()=>v.play().catch(()=>{});if(v.readyState>=1)play();else v.onloadedmetadata=play;return()=>{v.onloadedmetadata=null}},[cameraOn])
- function stopCamera(){if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}if(videoRef.current){videoRef.current.pause();videoRef.current.srcObject=null}setCameraOn(false)}
- async function capture(){
-  const v=videoRef.current;
-  if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
-  setError("");
-  try{
-   if(v.paused) await v.play();
-   await new Promise(r=>requestAnimationFrame(r));
-   const w=v.videoWidth,h=v.videoHeight;
-   if(!w||!h) throw new Error("Camera image is not ready yet. Wait a second and try again.");
-   const c=document.createElement("canvas");c.width=w;c.height=h;
-   const ctx=c.getContext("2d");
-   if(!ctx) throw new Error("Could not create the capture canvas.");
-   ctx.drawImage(v,0,0,w,h);
-   const data=c.toDataURL("image/jpeg",.92);
-   if(!data||data.length<100) throw new Error("The camera returned an empty image. Try again.");
-   setShot(data);
-  }catch(e){setError(e?.message||"Could not capture the camera image.")}
+
+let tesseractPromise = null;
+
+async function loadTesseract(){
+  if(window.Tesseract) return window.Tesseract;
+  if(tesseractPromise) return tesseractPromise;
+  tesseractPromise = new Promise((resolve,reject)=>{
+    const existing=document.querySelector('script[data-tesseract="1"]');
+    if(existing){
+      existing.addEventListener("load",()=>resolve(window.Tesseract),{once:true});
+      existing.addEventListener("error",()=>reject(new Error("Could not load the OCR engine.")),{once:true});
+      return;
+    }
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.async=true;
+    s.dataset.tesseract="1";
+    s.onload=()=>window.Tesseract?resolve(window.Tesseract):reject(new Error("OCR engine loaded but was not available."));
+    s.onerror=()=>reject(new Error("Could not load the OCR engine. Check your internet connection."));
+    document.head.appendChild(s);
+  });
+  return tesseractPromise;
 }
- useEffect(()=>()=>stopCamera(),[]);
- return <div className="scanner-page">
-  <div className="scanner-topbar">
-   <button className="ghost scanner-back" onClick={()=>nav("/admin")}>← Admin</button>
-   <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
-   <span className="scanner-step">1 / 3</span>
-  </div>
-  {error&&<div className="alert scanner-alert">{error}</div>}
-  <div className="scanner-content">
-   <div className="scanner-camera-wrap">
-    <div className="scanner-camera">
-     {cameraOn ? <div className="scanner-video-layer">
-      <video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
-      {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
-     </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
-     {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
+
+function scannerNormalizeText(v){
+  return String(v||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+}
+
+function scannerExtractNumber(text){
+  const s=String(text||"").replace(/\s+/g," ");
+  const patterns=[
+    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\s*\/\s*(\d{1,3})\b/i,
+    /\b(\d{1,3})\s*\/\s*(\d{1,3})\b/,
+    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\b/i
+  ];
+  for(const re of patterns){
+    const m=s.match(re);
+    if(m){
+      if(m.length===4)return `${m[1].toUpperCase()}${m[2]}/${m[3]}`;
+      if(m.length===3)return `${m[1]}/${m[2]}`;
+    }
+  }
+  return "";
+}
+
+function scannerExtractName(text){
+  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d)/i;
+  const candidates=lines
+    .map(x=>x.replace(/[^A-Za-zÀ-ÿ0-9' .-]/g," ").replace(/\s+/g," ").trim())
+    .filter(x=>x.length>=3&&x.length<=32&&!blocked.test(x))
+    .filter(x=>/[A-Za-z]/.test(x));
+  // Card names are normally near the top, so prefer the first plausible short line.
+  return candidates[0]||"";
+}
+
+async function scannerCropDataUrl(dataUrl, topOnly=false){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.naturalWidth,h=img.naturalHeight;
+      if(!w||!h)return reject(new Error("Captured image has no usable dimensions."));
+      // Upscale the useful regions before OCR. Tesseract performs better with
+      // sufficiently high-resolution input.
+      const sx=0, sy=topOnly?0:Math.floor(h*0.72);
+      const sw=w, sh=topOnly?Math.floor(h*0.32):Math.floor(h*0.28);
+      const scale=topOnly?2:3;
+      const c=document.createElement("canvas");
+      c.width=Math.max(1,Math.floor(sw*scale));
+      c.height=Math.max(1,Math.floor(sh*scale));
+      const ctx=c.getContext("2d");
+      if(!ctx)return reject(new Error("Could not prepare the image for OCR."));
+      ctx.imageSmoothingEnabled=true;
+      ctx.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
+      resolve(c.toDataURL("image/jpeg",.95));
+    };
+    img.onerror=()=>reject(new Error("Could not prepare the captured image for OCR."));
+    img.src=dataUrl;
+  });
+}
+
+function CardScanner(){
+  const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
+  const [cameraOn,setCameraOn]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
+  const [ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
+  const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]);
+
+  async function startCamera(){
+    setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);
+    try{
+      if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+      streamRef.current=stream;setCameraOn(true);
+    }catch(e){
+      setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
+      setCameraOn(false);
+    }finally{setBusy(false)}
+  }
+
+  useEffect(()=>{
+    if(!cameraOn||!streamRef.current)return;
+    const v=videoRef.current;if(!v)return;
+    v.srcObject=streamRef.current;
+    const play=()=>v.play().catch(()=>{});
+    if(v.readyState>=1)play();else v.onloadedmetadata=play;
+    return()=>{v.onloadedmetadata=null};
+  },[cameraOn]);
+
+  function stopCamera(){
+    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
+    if(videoRef.current){videoRef.current.pause();videoRef.current.srcObject=null}
+    setCameraOn(false);
+  }
+
+  async function capture(){
+    const v=videoRef.current;
+    if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
+    setError("");setIdentified(null);setCandidates([]);setOcrText("");
+    try{
+      if(v.paused)await v.play();
+      await new Promise(r=>requestAnimationFrame(r));
+      const w=v.videoWidth,h=v.videoHeight;
+      if(!w||!h)throw new Error("Camera image is not ready yet. Wait a second and try again.");
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      const ctx=c.getContext("2d");if(!ctx)throw new Error("Could not create the capture canvas.");
+      ctx.drawImage(v,0,0,w,h);
+      const data=c.toDataURL("image/jpeg",.92);
+      if(!data||data.length<100)throw new Error("The camera returned an empty image. Try again.");
+      setShot(data);
+    }catch(e){setError(e?.message||"Could not capture the camera image.")}
+  }
+
+  async function identifyCard(){
+    if(!shot||ocrBusy)return;
+    setError("");setIdentified(null);setCandidates([]);setOcrText("");setOcrProgress(0);setOcrBusy(true);
+    let worker=null;
+    try{
+      const Tesseract=await loadTesseract();
+      worker=await Tesseract.createWorker("eng",1,{
+        logger:m=>{
+          if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
+        }
+      });
+      workerRef.current=worker;
+
+      // Run OCR over the top (name) and bottom (collector number) separately.
+      // This avoids keyboard/background text confusing the recogniser.
+      const topImage=await scannerCropDataUrl(shot,true);
+      const bottomImage=await scannerCropDataUrl(shot,false);
+      const [top,bottom]=await Promise.all([
+        worker.recognize(topImage),
+        worker.recognize(bottomImage)
+      ]);
+      const combined=`${top?.data?.text||""}\n${bottom?.data?.text||""}`;
+      setOcrText(combined);
+
+      const rawName=scannerExtractName(top?.data?.text||"");
+      const rawNumber=scannerExtractNumber(bottom?.data?.text||"")||scannerExtractNumber(combined);
+      const cleanedName=rawName.trim();
+
+      if(!cleanedName&&!rawNumber)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
+
+      // TCGdex supports filtering the card list by name. We use the OCR name
+      // to narrow the candidates and then use the collector number to narrow
+      // further. TCGdex remains the source of truth for card identity/details.
+      const params=new URLSearchParams();
+      if(cleanedName)params.set("name",cleanedName);
+      params.set("pagination:page","1");
+      params.set("pagination:itemsPerPage","100");
+      const r=await fetch(`https://api.tcgdex.net/v2/en/cards?${params.toString()}`);
+      if(!r.ok)throw new Error("TCGdex card search failed. Try again.");
+      const list=await r.json();
+      let pool=Array.isArray(list)?list:[];
+
+      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^0+/,""):"";
+      const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
+      if(numberOnly){
+        const numbered=pool.filter(x=>{
+          const local=String(x.localId||"").replace(/^0+/,"");
+          return local===numberOnly || local.toUpperCase()===rawNumber.toUpperCase() || (numberPrefix&&local.toUpperCase()===`${numberPrefix}${numberOnly}`);
+        });
+        if(numbered.length)pool=numbered;
+      }
+
+      // If OCR slightly mangled the name, fall back to a broader local match.
+      if(!pool.length&&cleanedName){
+        const fallback=await fetch(`https://api.tcgdex.net/v2/en/cards?name=${encodeURIComponent(cleanedName.split(" ").slice(0,1).join(" "))}&pagination:page=1&pagination:itemsPerPage=100`);
+        if(fallback.ok){
+          const fb=await fallback.json();
+          pool=Array.isArray(fb)?fb:[];
+          if(numberOnly){
+            const numbered=pool.filter(x=>String(x.localId||"").replace(/^0+/,"")===numberOnly);
+            if(numbered.length)pool=numbered;
+          }
+        }
+      }
+
+      if(!pool.length){
+        throw new Error(`No TCGdex cards matched "${cleanedName||"the scanned text"}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame."}`);
+      }
+
+      // Fetch details for a small candidate set so the UI can show the exact
+      // set, rarity and image. One result is treated as an automatic match;
+      // multiple results are deliberately left for confirmation rather than
+      // guessing between identical Pokémon/collector numbers from different sets.
+      const detailed=await Promise.all(pool.slice(0,12).map(async x=>{
+        try{
+          const dr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(x.id)}`);
+          if(dr.ok)return await dr.json();
+        }catch(_){}
+        return x;
+      }));
+
+      const scored=detailed.map(x=>{
+        let score=0;
+        if(cleanedName&&scannerNormalizeText(x.name)===scannerNormalizeText(cleanedName))score+=100;
+        else if(cleanedName&&scannerNormalizeText(x.name).includes(scannerNormalizeText(cleanedName)))score+=60;
+        if(numberOnly&&String(x.localId||"").replace(/^0+/,"")===numberOnly)score+=100;
+        if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=100;
+        return {...x,scannerScore:score};
+      }).sort((a,b)=>b.scannerScore-a.scannerScore);
+
+      setCandidates(scored);
+      if(scored.length===1)setIdentified(scored[0]);
+    }catch(e){
+      setError(e?.message||"Could not identify the card.");
+    }finally{
+      setOcrBusy(false);setOcrProgress(100);
+      if(workerRef.current){
+        try{await workerRef.current.terminate()}catch(_){}
+        workerRef.current=null;
+      }
+    }
+  }
+
+  function chooseCandidate(card){
+    setIdentified(card);setCandidates([card]);
+  }
+
+  function clearCapture(){
+    setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setError("");setOcrProgress(0);
+  }
+
+  useEffect(()=>()=>{if(workerRef.current){workerRef.current.terminate().catch(()=>{});workerRef.current=null}stopCamera()},[]);
+
+  return <div className="scanner-page">
+    <div className="scanner-topbar">
+      <button className="ghost scanner-back" onClick={()=>nav("/admin")}>← Admin</button>
+      <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
+      <span className="scanner-step">{identified?"3 / 3":shot?"2 / 3":"1 / 3"}</span>
     </div>
-    <div className="scanner-controls">
-     {!cameraOn?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>:<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>}
+
+    {error&&<div className="alert scanner-alert">{error}</div>}
+
+    <div className="scanner-content">
+      <div className="scanner-camera-wrap">
+        <div className="scanner-camera">
+          {cameraOn ? <div className="scanner-video-layer">
+            <video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
+            {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
+          </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
+          {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
+        </div>
+
+        <div className="scanner-controls">
+          {!cameraOn
+            ?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>
+            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
+          }
+        </div>
+
+        {shot&&<div className="scanner-identify-actions">
+          <button className="scanner-primary" onClick={identifyCard} disabled={ocrBusy}>{ocrBusy?`Identifying… ${ocrProgress}%`:"Identify card"}</button>
+          <button className="ghost" onClick={clearCapture} disabled={ocrBusy}>Clear</button>
+        </div>}
+
+        <p className="scanner-hint">{cameraOn?"Hold the card flat, keep all four corners visible and avoid glare.":"Camera capture is ready — next we'll identify the card from the captured image."}</p>
+      </div>
+
+      <div className="scanner-result">
+        <div className="scanner-result-head"><span className="eyebrow">{identified?"IDENTIFIED":candidates.length?"MATCHES":"CAPTURE"}</span>{shot&&<button className="ghost" onClick={clearCapture}>Clear</button>}</div>
+
+        {ocrBusy&&<div className="scanner-empty"><span>🔎</span><b>Reading card…</b><small>OCR is reading the card name and collector number.</small></div>}
+
+        {!ocrBusy&&!shot&&<div className="scanner-empty"><span>📸</span><b>No card captured</b><small>Your captured card will appear here.</small></div>}
+
+        {!ocrBusy&&shot&&identified&&<div className="scanner-identification">
+          {identified.image?<img src={identified.image} alt={identified.name||"Identified card"}/>:null}
+          <div className="scanner-identification-info">
+            <b>{identified.name}</b>
+            <small>{identified.set?.name||"Set not available"} · #{identified.localId}</small>
+            <small>{identified.rarity||"Rarity not available"}</small>
+            <strong>✓ Exact candidate</strong>
+          </div>
+        </div>}
+
+        {!ocrBusy&&shot&&!identified&&candidates.length>1&&<div className="scanner-candidates">
+          <b>Choose the matching card</b>
+          <small>OCR found multiple cards. We won't guess between different printings.</small>
+          {candidates.map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c)}>
+            {c.image?<img src={c.image} alt=""/>:null}
+            <span><b>{c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
+          </button>)}
+        </div>}
+
+        {!ocrBusy&&shot&&!identified&&!candidates.length&&!error&&<div className="scanner-empty"><span>🔎</span><b>Ready to identify</b><small>Tap Identify card to read the captured image.</small></div>}
+
+        {!ocrBusy&&shot&&ocrText&&<details className="scanner-ocr-details"><summary>OCR text</summary><pre>{ocrText}</pre></details>}
+      </div>
     </div>
-    <p className="scanner-hint">{cameraOn?"Hold the card flat, keep all four corners visible and avoid glare.":"Camera identification comes next — for now we're testing the capture workflow."}</p>
-   </div>
-   <div className="scanner-result">
-    <div className="scanner-result-head"><span className="eyebrow">CAPTURE</span>{shot&&<button className="ghost" onClick={()=>setShot(null)}>Clear</button>}</div>
-    {shot?<div className="scanner-shot"><img src={shot} alt="Captured Pokémon card"/><div><b>Card captured</b><small>Ready for the identification step.</small></div></div>:<div className="scanner-empty"><span>📸</span><b>No card captured</b><small>Your captured card will appear here.</small></div>}
-   </div>
   </div>
- </div>
 }
 
 function Locations({locations,onDone}){
