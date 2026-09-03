@@ -933,18 +933,11 @@ function CardScanner(){
       video.muted=true;
       video.playsInline=true;
       video.autoplay=true;
+      // Attach the stream first, then let the camera effect start playback
+      // after React has rendered the live video element. This avoids a mobile
+      // Safari/Chrome race where the preview can stay blank.
       video.srcObject=stream;
       setCameraOn(true);
-      // Start playback immediately. Do not call pause() while this promise is pending.
-      try{
-        const playPromise=video.play();
-        playPromiseRef.current=playPromise;
-        await playPromise;
-      }catch(e){
-        if(e?.name!=="AbortError")throw e;
-      }finally{
-        playPromiseRef.current=null;
-      }
     }catch(e){
       if(generation===cameraGenerationRef.current){
         setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
@@ -967,14 +960,13 @@ function CardScanner(){
       v.autoplay=true;
       if(v.srcObject!==stream)v.srcObject=stream;
       try{
-        if(v.readyState<2){
+        if(v.readyState<1){
           await new Promise(resolve=>{
-            const done=()=>{v.removeEventListener("canplay",done);resolve();};
-            v.addEventListener("canplay",done,{once:true});
+            const done=()=>{v.removeEventListener("loadedmetadata",done);resolve();};
+            v.addEventListener("loadedmetadata",done,{once:true});
           });
         }
         if(cancelled||!v.srcObject)return;
-        if(!v.paused)return;
         const promise=v.play();
         playPromiseRef.current=promise;
         await promise;
@@ -1003,7 +995,6 @@ function CardScanner(){
     }
     if(videoRef.current)videoRef.current.srcObject=null;
     setCameraOn(false);
-    setFrameStatus({key:"none",label:"PLACE CARD INSIDE FRAME",detail:"Keep all four corners visible",ready:false});
   }
 
   async function capture(){
@@ -1219,7 +1210,7 @@ function CardScanner(){
     <div className="scanner-content">
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
-          <div className="scanner-video-layer" style={{display:cameraOn?"block":"none"}}>
+          <div className="scanner-video-layer" style={{display:"block",visibility:cameraOn?"visible":"hidden"}}>
             <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
             {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
           </div>
@@ -1230,7 +1221,7 @@ function CardScanner(){
         <div className="scanner-controls">
           {!cameraOn
             ?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>
-            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":frameStatus.ready?"Capture":"Capture anyway"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
+            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
           }
         </div>
 
@@ -1291,4 +1282,3 @@ function Locations({locations,onDone}){
 }
 
 createRoot(document.getElementById("root")).render(<App/>);
-
