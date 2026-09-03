@@ -871,15 +871,23 @@ function CardScanner(){
         return;
       }
       streamRef.current=stream;
-      // Attach the stream to the existing video element before switching the
-      // UI into camera mode. This avoids a mobile-browser race where React
-      // mounts the <video> and autoPlay fires before srcObject is attached.
-      if(videoRef.current){
-        videoRef.current.muted=true;
-        videoRef.current.playsInline=true;
-        videoRef.current.srcObject=stream;
-      }
+      const video=videoRef.current;
+      if(!video)throw new Error("Camera preview element is not ready. Please try again.");
+      video.muted=true;
+      video.playsInline=true;
+      video.autoplay=true;
+      video.srcObject=stream;
       setCameraOn(true);
+      // Start playback immediately. Do not call pause() while this promise is pending.
+      try{
+        const playPromise=video.play();
+        playPromiseRef.current=playPromise;
+        await playPromise;
+      }catch(e){
+        if(e?.name!=="AbortError")throw e;
+      }finally{
+        playPromiseRef.current=null;
+      }
     }catch(e){
       if(generation===cameraGenerationRef.current){
         setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
@@ -894,47 +902,39 @@ function CardScanner(){
     if(!cameraOn)return;
     const v=videoRef.current,stream=streamRef.current;
     if(!v||!stream)return;
-
     let cancelled=false;
-    const attachAndPlay=async()=>{
+    const play=async()=>{
       if(cancelled)return;
       v.muted=true;
       v.playsInline=true;
+      v.autoplay=true;
       if(v.srcObject!==stream)v.srcObject=stream;
-
-      let promise=null;
       try{
-        if(v.readyState<1){
+        if(v.readyState<2){
           await new Promise(resolve=>{
-            const done=()=>{v.removeEventListener("loadedmetadata",done);resolve();};
-            v.addEventListener("loadedmetadata",done,{once:true});
+            const done=()=>{v.removeEventListener("canplay",done);resolve();};
+            v.addEventListener("canplay",done,{once:true});
           });
         }
-        if(cancelled)return;
-        if(v.readyState>=2&&!v.paused)return;
-        promise=v.play();
+        if(cancelled||!v.srcObject)return;
+        if(!v.paused)return;
+        const promise=v.play();
         playPromiseRef.current=promise;
         await promise;
       }catch(e){
         if(e?.name!=="AbortError"&&!cancelled)setError(e?.message||"Could not start camera playback.");
       }finally{
-        if(playPromiseRef.current===promise)playPromiseRef.current=null;
+        if(playPromiseRef.current)playPromiseRef.current=null;
       }
     };
-
-    // Kick playback after the stream is attached, and again if the browser
-    // doesn't expose metadata immediately. Never pause a pending play().
-    const kick=()=>{attachAndPlay();};
-    v.addEventListener("loadedmetadata",kick,{once:true});
-    v.addEventListener("canplay",kick,{once:true});
-    attachAndPlay();
-
+    play();
+    v.addEventListener("canplay",play);
+    v.addEventListener("loadeddata",play);
     return()=>{
       cancelled=true;
-      v.removeEventListener("loadedmetadata",kick);
-      v.removeEventListener("canplay",kick);
-      // Deliberately no v.pause(): that is what triggers Chrome's
-      // "play() request was interrupted by a call to pause()" race.
+      v.removeEventListener("canplay",play);
+      v.removeEventListener("loadeddata",play);
+      // Never call pause() here; stopping the MediaStream is enough.
     };
   },[cameraOn]);
 
@@ -1169,10 +1169,11 @@ function CardScanner(){
     <div className="scanner-content">
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
-          {cameraOn ? <div className="scanner-video-layer">
-            <video ref={videoRef} playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
+          <div className="scanner-video-layer" style={{display:cameraOn?"block":"none"}}>
+            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
             {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
-          </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
+          </div>
+          {!cameraOn&&<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
         </div>
 
