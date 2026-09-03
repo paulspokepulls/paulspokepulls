@@ -650,44 +650,31 @@ function scannerExtractNumber(text){
   return "";
 }
 
-function scannerNameCandidates(text,language="en"){
+function scannerNameCandidates(text){
   const raw=String(text||"");
   const out=[];
-  const japanese=language==="ja";
   const push=v=>{
-    let x=String(v||"").normalize("NFKC");
-    x=x.replace(/[\u0000-\u001F\u007F]/g," ").replace(/\s+/g," ").trim();
+    const x=String(v||"").normalize("NFKC").replace(/\s+/g," ").trim();
     if(x.length<2||x.length>40)return;
-    if(japanese){
-      // Keep Japanese kana/kanji intact; OCR often includes a small amount of
-      // Latin/number noise around the name, so trim obvious card labels.
-      x=x.replace(/^(?:BASIC|STAGE|HP|NO\.?|ILLUSTRATOR)\s*/i,"").trim();
-      if(!/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(x))return;
-    }else{
-      x=x.replace(/[^A-Za-zÀ-ÿ0-9\' .-]/g," ").replace(/\s+/g," ").trim();
-      if(!/[A-Za-z]/.test(x))return;
-    }
+    const hasLatin=/[A-Za-zÀ-ÿ]/.test(x);
+    const hasJapanese=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(x);
+    if(!hasLatin&&!hasJapanese)return;
     const key=scannerNormalizeText(x);
     if(!key||out.some(y=>scannerNormalizeText(y)===key))return;
     out.push(x);
   };
-  const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d)/i;
+  const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d|HP|弱点|抵抗力|にげる|特性|ワザ|イラスト)/i;
   raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{
     const clean=line.normalize("NFKC").replace(/\s+/g," ").trim();
-    if(clean&&!(!japanese&&blocked.test(clean))&&!(japanese&&/^(?:HP|弱点|抵抗力|にげる|特性|ワザ|イラスト)/i.test(clean)))push(clean);
-    if(!japanese){
-      const latin=clean.replace(/[^A-Za-zÀ-ÿ0-9\' .-]/g," ").replace(/\s+/g," ").trim();
-      const deglued=latin.replace(/^\d{1,8}\s*/,"").replace(/([a-zà-ÿ])([A-ZÀ-Ý])/g,"$1 $2").trim();
-      if(deglued&&!blocked.test(deglued))push(deglued);
-    }
+    if(clean&&!blocked.test(clean))push(clean);
+    const latin=clean.replace(/[^A-Za-zÀ-ÿ0-9\' .-]/g," ").replace(/\s+/g," ").trim();
+    const deglued=latin.replace(/^\d{1,8}\s*/,"").replace(/([a-zà-ÿ])([A-ZÀ-Ý])/g,"$1 $2").trim();
+    if(deglued&&!blocked.test(deglued))push(deglued);
   });
-  if(!japanese){
-    const embedded=raw.match(/(?:[A-ZÀ-Ý][a-zà-ÿ]{1,18}\s*){1,4}/g)||[];
-    embedded.forEach(x=>push(x));
-  }
+  const embedded=raw.match(/(?:[A-ZÀ-Ý][a-zà-ÿ]{1,18}\s*){1,4}/g)||[];
+  embedded.forEach(x=>push(x));
   return out.slice(0,30);
 }
-
 function scannerExtractName(text){
   return scannerNameCandidates(text)[0]||"";
 }
@@ -802,11 +789,7 @@ function CardScanner(){
     let worker=null;
     try{
       const Tesseract=await loadTesseract();
-      // Japanese cards need Japanese trained data for the Pokémon name, while
-      // English cards keep the faster English-only OCR path. Japanese card
-      // numbers are still Latin digits, so jpn+eng gives the best coverage.
-      const scanLang=(navigator.language||"").toLowerCase().startsWith("ja")?"jpn+eng":"eng";
-      worker=await Tesseract.createWorker(scanLang,1,{
+      worker=await Tesseract.createWorker("jpn+eng",1,{
         logger:m=>{
           if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
         }
@@ -827,15 +810,13 @@ function CardScanner(){
         worker.recognize(nameImage),
         worker.recognize(numberImage)
       ]);
-      // Detect Japanese OCR from the actual name crop as well, so the scanner
-      // works even when the phone/browser language is English.
-      const japaneseNameText=top?.data?.text||"";
-      const isJapaneseCard=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(japaneseNameText);
-      const tcgLanguage=isJapaneseCard?"ja":"en";
       const combined=`${top?.data?.text||""}\n${bottom?.data?.text||""}`;
       setOcrText(combined);
 
-      const nameCandidates=scannerNameCandidates(top?.data?.text||"",tcgLanguage);
+      const topText=top?.data?.text||"";
+      const isJapaneseCard=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(topText);
+      const tcgLanguage=isJapaneseCard?"ja":"en";
+      const nameCandidates=scannerNameCandidates(topText);
       const rawName=nameCandidates[0]||"";
       const rawNumber=scannerExtractNumber(bottom?.data?.text||"")||scannerExtractNumber(combined);
       const cleanedName=rawName.trim();
@@ -900,26 +881,14 @@ function CardScanner(){
         return x;
       }));
 
-      const scored=await Promise.all(detailed.map(async x=>{
+      const scored=detailed.map(x=>{
         let score=0;
         const xn=scannerNormalizeText(x.name),bn=scannerNormalizeText(bestCandidate);
         if(xn===bn)score+=100;else if(xn.includes(bn)||bn.includes(xn))score+=60;
         if(numberOnly&&String(x.localId||"").replace(/^0+/ ,"")===numberOnly)score+=100;
         if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=100;
-        let englishName=x.name||"";
-        const dexId=Array.isArray(x.dexId)?x.dexId[0]:x.dexId;
-        if(isJapaneseCard&&dexId){
-          try{
-            const sr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-            if(sr.ok){
-              const species=await sr.json();
-              const en=(species.names||[]).find(n=>n.language?.name==="en");
-              englishName=en?.name||species.name||englishName;
-            }
-          }catch(_){ }
-        }
-        return {...x,englishName,scannerScore:score};
-      })).then(a=>a.sort((x,y)=>y.scannerScore-x.scannerScore));
+        return {...x,scannerScore:score};
+      }).sort((a,b)=>b.scannerScore-a.scannerScore);
 
       setCandidates(scored);
       if(scored.length===1)setIdentified(scored[0]);
@@ -981,14 +950,14 @@ function CardScanner(){
       <div className="scanner-result">
         <div className="scanner-result-head"><span className="eyebrow">{identified?"IDENTIFIED":candidates.length?"MATCHES":"CAPTURE"}</span>{shot&&<button className="ghost" onClick={clearCapture}>Clear</button>}</div>
 
-        {ocrBusy&&<div className="scanner-empty"><span>🔎</span><b>Reading card…</b><small>OCR is reading the card name and collector number (including Japanese cards).</small></div>}
+        {ocrBusy&&<div className="scanner-empty"><span>🔎</span><b>Reading card…</b><small>OCR is reading the card name and collector number.</small></div>}
 
         {!ocrBusy&&!shot&&<div className="scanner-empty"><span>📸</span><b>No card captured</b><small>Your captured card will appear here.</small></div>}
 
         {!ocrBusy&&shot&&identified&&<div className="scanner-identification">
           {identified.image?<img src={identified.image} alt={identified.name||"Identified card"}/>:null}
           <div className="scanner-identification-info">
-            <b>{identified.englishName||identified.name}</b>
+            <b>{identified.name}</b>
             <small>{identified.set?.name||"Set not available"} · #{identified.localId}</small>
             <small>{identified.rarity||"Rarity not available"}</small>
             <strong>✓ Exact candidate</strong>
@@ -1000,7 +969,7 @@ function CardScanner(){
           <small>OCR found multiple cards. We won't guess between different printings.</small>
           {candidates.map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c)}>
             {c.image?<img src={c.image} alt=""/>:null}
-            <span><b>{c.englishName||c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
+            <span><b>{c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
           </button>)}
         </div>}
 
