@@ -633,21 +633,58 @@ function scannerNormalizeText(v){
   return String(v||"").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu," ").trim();
 }
 
+function scannerOcrNumericToken(v){
+  let s=String(v||"").normalize("NFKC").trim();
+  // Tesseract sometimes prepends a couple of letters to a collector number
+  // (e.g. "EN0s3/106" for the visible "083/106"). Strip that OCR noise when
+  // it is immediately before the numeric portion.
+  s=s.replace(/^[A-Za-z]+(?=\d)/,"");
+  const map={O:"0",o:"0",Q:"0",q:"0",D:"0",d:"0",
+    I:"1",i:"1",L:"1",l:"1",Z:"2",z:"2",E:"3",e:"3",A:"4",a:"4",
+    S:"5",s:"8",B:"8",b:"8",G:"6",g:"6",T:"7",t:"7"};
+  return s.split("").map(ch=>/\d/.test(ch)?ch:(map[ch]||"")).join("");
+}
+
 function scannerExtractNumberInfo(text){
   const s=String(text||"").normalize("NFKC").replace(/\s+/g," ");
-  const patterns=[
+  // First handle the normal/clean OCR forms.
+  const cleanPatterns=[
     /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/i,
     /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/,
     /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\b/i
   ];
-  for(const re of patterns){
+  for(const re of cleanPatterns){
     const m=s.match(re);
     if(!m)continue;
-    if(m.length===4)return {prefix:String(m[1]).toUpperCase(),localId:String(m[2]),total:String(m[3]),display:`${String(m[1]).toUpperCase()}${m[2]}/${m[3]}`};
-    if(m.length===3)return {prefix:"",localId:String(m[1]),total:String(m[2]),display:`${m[1]}/${m[2]}`};
+    if(m.length===4)return {
+      prefix:String(m[1]).toUpperCase(),
+      localId:String(m[2]),
+      total:String(m[3]),
+      display:`${String(m[1]).toUpperCase()}${m[2]}/${m[3]}`
+    };
+    if(m.length===3)return {
+      prefix:"",
+      localId:String(m[1]),
+      total:String(m[2]),
+      display:`${m[1]}/${m[2]}`
+    };
+  }
+
+  // Japanese/Asian cards are commonly returned by OCR with a few Latin
+  // substitutions around the slash, e.g. "EN0s3/106". Treat the slash as
+  // the anchor and repair only the two number tokens.
+  const noisy=/([A-Za-z0-9]{1,10})\s*[\/|]\s*([A-Za-z0-9]{1,6})/g;
+  let m;
+  while((m=noisy.exec(s))){
+    const local=scannerOcrNumericToken(m[1]);
+    const total=scannerOcrNumericToken(m[2]);
+    if(!local||!total||local.length>3||total.length>3)continue;
+    if(!/^\d{1,3}$/.test(local)||!/^\d{1,3}$/.test(total))continue;
+    return {prefix:"",localId:local,total,display:`${local}/${total}`};
   }
   return null;
 }
+
 function scannerExtractNumber(text){
   return scannerExtractNumberInfo(text)?.display||"";
 }
@@ -700,6 +737,33 @@ async function scannerFindByNumber(lang,numberInfo){
   return details.sort((a,b)=>b.scannerScore-a.scannerScore);
 }
 
+function scannerJapaneseNameCandidates(text){
+  const raw=String(text||"").normalize("NFKC");
+  const out=[];
+  const add=v=>{
+    const x=String(v||"").normalize("NFKC").replace(/\s+/g,"").trim();
+    if(x.length<2||x.length>20)return;
+    if(!/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(x))return;
+    if(!out.includes(x))out.push(x);
+  };
+
+  // The name is normally the first Japanese text in the dedicated name crop.
+  // Stop before HP/numbers/Latin OCR noise, then also generate shorter prefixes.
+  for(const line of raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)){
+    const beforeNumber=line.split(/\d/)[0].trim();
+    const jp=beforeNumber.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+(?:\s*[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]+)*/u);
+    if(!jp)continue;
+    const compact=jp[0].replace(/\s+/g,"");
+    add(compact);
+    // OCR can append one or two Japanese/Latin garbage words after the real
+    // Pokémon name. Prefixes let TCGdex find the exact localized name without
+    // ever falling back to an unrelated English fuzzy match.
+    const chars=Array.from(compact);
+    for(let n=Math.min(chars.length-1,12);n>=2;n--)add(chars.slice(0,n).join(""));
+  }
+  return out.slice(0,15);
+}
+
 function scannerNameCandidates(text){
   const raw=String(text||"");
   const out=[];
@@ -713,6 +777,10 @@ function scannerNameCandidates(text){
     if(!key||out.some(y=>scannerNormalizeText(y)===key))return;
     out.push(x);
   };
+
+  const japanese=scannerJapaneseNameCandidates(raw);
+  japanese.forEach(push);
+
   const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d|HP|弱点|抵抗力|にげる|特性|ワザ|イラスト)/i;
   raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{
     const clean=line.normalize("NFKC").replace(/\s+/g," ").trim();
