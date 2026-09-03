@@ -733,6 +733,7 @@ async function scannerCropDataUrl(dataUrl, region="card"){
 
 function CardScanner(){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
+  const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
   const [cameraOn,setCameraOn]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
   const [ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
   const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]);
@@ -740,28 +741,84 @@ function CardScanner(){
 
   async function startCamera(){
     setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);
+    const generation=++cameraGenerationRef.current;
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");
-      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
-      streamRef.current=stream;setCameraOn(true);
+      const stream=await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
+        audio:false
+      });
+      if(generation!==cameraGenerationRef.current){
+        stream.getTracks().forEach(t=>t.stop());
+        return;
+      }
+      streamRef.current=stream;
+      setCameraOn(true);
     }catch(e){
-      setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
-      setCameraOn(false);
-    }finally{setBusy(false)}
+      if(generation===cameraGenerationRef.current){
+        setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
+        setCameraOn(false);
+      }
+    }finally{
+      if(generation===cameraGenerationRef.current)setBusy(false);
+    }
   }
 
   useEffect(()=>{
-    if(!cameraOn||!streamRef.current)return;
-    const v=videoRef.current;if(!v)return;
-    v.srcObject=streamRef.current;
-    const play=()=>v.play().catch(()=>{});
-    if(v.readyState>=1)play();else v.onloadedmetadata=play;
-    return()=>{v.onloadedmetadata=null};
+    if(!cameraOn)return;
+    const v=videoRef.current,stream=streamRef.current;
+    if(!v||!stream)return;
+
+    let cancelled=false;
+    const attachAndPlay=async()=>{
+      if(cancelled)return;
+      v.muted=true;
+      v.playsInline=true;
+      if(v.srcObject!==stream)v.srcObject=stream;
+
+      let promise=null;
+      try{
+        if(v.readyState<1){
+          await new Promise(resolve=>{
+            const done=()=>{v.removeEventListener("loadedmetadata",done);resolve();};
+            v.addEventListener("loadedmetadata",done,{once:true});
+          });
+        }
+        if(cancelled)return;
+        if(v.readyState>=2&&!v.paused)return;
+        promise=v.play();
+        playPromiseRef.current=promise;
+        await promise;
+      }catch(e){
+        if(e?.name!=="AbortError"&&!cancelled)setError(e?.message||"Could not start camera playback.");
+      }finally{
+        if(playPromiseRef.current===promise)playPromiseRef.current=null;
+      }
+    };
+
+    // Kick playback after the stream is attached, and again if the browser
+    // doesn't expose metadata immediately. Never pause a pending play().
+    const kick=()=>{attachAndPlay();};
+    v.addEventListener("loadedmetadata",kick,{once:true});
+    v.addEventListener("canplay",kick,{once:true});
+    attachAndPlay();
+
+    return()=>{
+      cancelled=true;
+      v.removeEventListener("loadedmetadata",kick);
+      v.removeEventListener("canplay",kick);
+      // Deliberately no v.pause(): that is what triggers Chrome's
+      // "play() request was interrupted by a call to pause()" race.
+    };
   },[cameraOn]);
 
   function stopCamera(){
-    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
-    if(videoRef.current){videoRef.current.pause();videoRef.current.srcObject=null}
+    ++cameraGenerationRef.current;
+    if(streamRef.current){
+      streamRef.current.getTracks().forEach(t=>t.stop());
+      streamRef.current=null;
+    }
+    if(videoRef.current)videoRef.current.srcObject=null;
     setCameraOn(false);
   }
 
@@ -770,7 +827,18 @@ function CardScanner(){
     if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
     setError("");setIdentified(null);setCandidates([]);setOcrText("");
     try{
-      if(v.paused)await v.play();
+      if(v.paused){
+        let promise=null;
+        try{
+          promise=v.play();
+          playPromiseRef.current=promise;
+          await promise;
+        }catch(e){
+          if(e?.name!=="AbortError")throw e;
+        }finally{
+          if(playPromiseRef.current===promise)playPromiseRef.current=null;
+        }
+      }
       await new Promise(r=>requestAnimationFrame(r));
       const w=v.videoWidth,h=v.videoHeight;
       if(!w||!h)throw new Error("Camera image is not ready yet. Wait a second and try again.");
@@ -934,7 +1002,7 @@ function CardScanner(){
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
           {cameraOn ? <div className="scanner-video-layer">
-            <video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
+            <video ref={videoRef} playsInline muted autoPlay className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
             {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
           </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
