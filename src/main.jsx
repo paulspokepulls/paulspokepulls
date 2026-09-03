@@ -647,32 +647,12 @@ function scannerOcrNumericToken(v){
 
 function scannerExtractNumberInfo(text){
   const s=String(text||"").normalize("NFKC").replace(/\s+/g," ");
-  // First handle the normal/clean OCR forms.
-  const cleanPatterns=[
-    /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/i,
-    /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/,
-    /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\b/i
-  ];
-  for(const re of cleanPatterns){
-    const m=s.match(re);
-    if(!m)continue;
-    if(m.length===4)return {
-      prefix:String(m[1]).toUpperCase(),
-      localId:String(m[2]),
-      total:String(m[3]),
-      display:`${String(m[1]).toUpperCase()}${m[2]}/${m[3]}`
-    };
-    if(m.length===3)return {
-      prefix:"",
-      localId:String(m[1]),
-      total:String(m[2]),
-      display:`${m[1]}/${m[2]}`
-    };
-  }
 
-  // Japanese/Asian cards are commonly returned by OCR with a few Latin
-  // substitutions around the slash, e.g. "EN0s3/106". Treat the slash as
-  // the anchor and repair only the two number tokens.
+  // For Asian cards, the slash is a much stronger anchor than a standalone
+  // number. Tesseract can turn a visible "083/106" into "EN0s3/106"; if we
+  // search for a clean "3/106" first we accidentally throw away the 08.
+  // Always repair the complete token surrounding the slash before falling
+  // back to ordinary clean OCR patterns.
   const noisy=/([A-Za-z0-9]{1,10})\s*[\/|]\s*([A-Za-z0-9]{1,6})/g;
   let m;
   while((m=noisy.exec(s))){
@@ -681,6 +661,29 @@ function scannerExtractNumberInfo(text){
     if(!local||!total||local.length>3||total.length>3)continue;
     if(!/^\d{1,3}$/.test(local)||!/^\d{1,3}$/.test(total))continue;
     return {prefix:"",localId:local,total,display:`${local}/${total}`};
+  }
+
+  // Normal/clean OCR forms.
+  const cleanPatterns=[
+    /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/i,
+    /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/,
+    /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\b/i
+  ];
+  for(const re of cleanPatterns){
+    const hit=s.match(re);
+    if(!hit)continue;
+    if(hit.length===4)return {
+      prefix:String(hit[1]).toUpperCase(),
+      localId:String(hit[2]),
+      total:String(hit[3]),
+      display:`${String(hit[1]).toUpperCase()}${hit[2]}/${hit[3]}`
+    };
+    if(hit.length===3)return {
+      prefix:"",
+      localId:String(hit[1]),
+      total:String(hit[2]),
+      display:`${hit[1]}/${hit[2]}`
+    };
   }
   return null;
 }
@@ -793,6 +796,51 @@ async function scannerFindByNumber(lang,numberInfo,nameCandidates=[]){
       scannerNumberConfirmed:scannerLocalIdKey(detail?.localId)===wantedLocal,
       scannerDenominatorConfirmed:(Number.isFinite(total)&&Number.isFinite(wantedTotal)&&total===wantedTotal)||(Number.isFinite(official)&&Number.isFinite(wantedTotal)&&official===wantedTotal)
     };
+  }));
+
+  return details.sort((a,b)=>b.scannerScore-a.scannerScore);
+}
+
+async function scannerFindByNameAndTotal(lang,nameCandidates=[],wantedTotal=null){
+  const wantedNames=(nameCandidates||[]).map(scannerNormalizeText).filter(Boolean);
+  if(!wantedNames.length)return [];
+  const found=new Map();
+
+  for(const name of wantedNames.slice(0,8)){
+    try{
+      const params=new URLSearchParams();
+      params.set("name",name);
+      params.set("pagination:page","1");
+      params.set("pagination:itemsPerPage","100");
+      const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards?${params.toString()}`);
+      if(!r.ok)continue;
+      const list=await r.json();
+      if(!Array.isArray(list))continue;
+      for(const x of list){
+        const xn=scannerNormalizeText(x.name);
+        if(!wantedNames.some(n=>xn===n||xn.includes(n)||n.includes(xn)))continue;
+        found.set(`${lang}:${x.id}`,x);
+      }
+    }catch(_){}
+  }
+
+  const details=await Promise.all([...found.values()].map(async x=>{
+    let detail=x;
+    try{
+      const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards/${encodeURIComponent(x.id)}`);
+      if(r.ok)detail={...x,...await r.json()};
+    }catch(_){}
+    const localName=scannerNormalizeText(detail?.name||x?.name||"");
+    const exactName=wantedNames.some(n=>localName===n);
+    const total=Number(detail?.set?.cardCount?.total);
+    const official=Number(detail?.set?.cardCount?.official);
+    const totalMatch=Number.isFinite(wantedTotal)&&((Number.isFinite(total)&&total===Number(wantedTotal))||(Number.isFinite(official)&&official===Number(wantedTotal)));
+    let score=0;
+    if(exactName)score+=1000;
+    else score+=250;
+    if(totalMatch)score+=500;
+    if(detail?.category==="Pokemon")score+=15;
+    return {...detail,scannerScore:score,scannerLanguage:lang,scannerLanguageName:lang==="ja"?"Japanese":lang,scannerExactLocalizedName:exactName,scannerDenominatorConfirmed:totalMatch,scannerNumberConfirmed:false};
   }));
 
   return details.sort((a,b)=>b.scannerScore-a.scannerScore);
@@ -1113,13 +1161,28 @@ function CardScanner(){
             }
             return {...x,localName:x.name,englishName};
           }));
+          const exactLocalized=detailed.filter(x=>x.scannerExactLocalizedName&&x.scannerNumberConfirmed);
+
+          // If the number OCR and localized name disagree, do NOT trust the
+          // number blindly. For example the visible Japanese 083/106 can be
+          // OCR'd as 003/106. In that case the exact localized name + set
+          // denominator is the safer identity and prevents a false Durant ex.
+          if(!exactLocalized.length&&nameCandidates.length){
+            const nameHits=await scannerFindByNameAndTotal(script,nameCandidates,numberInfo.total);
+            const exactNameHits=nameHits.filter(x=>x.scannerExactLocalizedName);
+            if(exactNameHits.length){
+              const winner=exactNameHits[0];
+              const denominatorOk=!!winner.scannerDenominatorConfirmed;
+              const exactNameAndDenominator=denominatorOk||!Number.isFinite(Number(numberInfo.total));
+              setCandidates(nameHits.slice(0,12));
+              if(exactNameAndDenominator)setIdentified(winner);
+              return;
+            }
+          }
+
           const best=detailed[0];
           const second=detailed[1];
-          const exactLocalized=detailed.filter(x=>x.scannerExactLocalizedName&&x.scannerNumberConfirmed);
           const denominatorConfirmed=!!best?.scannerDenominatorConfirmed;
-          // If OCR gave us an exact localized Pokémon name as well as the
-          // collector number, require that combination before auto-selecting.
-          // Otherwise use number + denominator + a clear score gap.
           const winner=exactLocalized.length===1?exactLocalized[0]:best;
           const winnerSecond=exactLocalized.length===1?detailed.find(x=>x.id!==winner.id):second;
           const winnerDenominator=!!winner?.scannerDenominatorConfirmed;
