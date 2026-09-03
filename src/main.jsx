@@ -676,23 +676,50 @@ function scannerExtractName(text){
   return scannerNameCandidates(text)[0]||"";
 }
 
-async function scannerCropDataUrl(dataUrl, topOnly=false){
+async function scannerCropDataUrl(dataUrl, region="card"){
   return new Promise((resolve,reject)=>{
     const img=new Image();
     img.onload=()=>{
       const w=img.naturalWidth,h=img.naturalHeight;
       if(!w||!h)return reject(new Error("Captured image has no usable dimensions."));
-      // Upscale the useful regions before OCR. Tesseract performs better with
-      // sufficiently high-resolution input.
-      const sx=0, sy=topOnly?0:Math.floor(h*0.72);
-      const sw=w, sh=topOnly?Math.floor(h*0.32):Math.floor(h*0.28);
-      const scale=topOnly?2:3;
+
+      // The on-screen scanner guide sits over the centre of the 4:3 camera
+      // viewport, while most phones deliver a 16:9 camera frame. Because the
+      // video uses object-fit:cover, the left/right edges of the source are
+      // cropped on screen. Recreate that visible viewport first, then crop to
+      // the card guide. This removes the keyboard/desk/background cards before
+      // OCR ever sees the image.
+      const viewportAspect=4/3;
+      const sourceAspect=w/h;
+      let vx=0,vy=0,vw=w,vh=h;
+      if(sourceAspect>viewportAspect){
+        vh=h;vw=Math.floor(h*viewportAspect);vx=Math.floor((w-vw)/2);
+      }else if(sourceAspect<viewportAspect){
+        vw=w;vh=Math.floor(w/viewportAspect);vy=Math.floor((h-vh)/2);
+      }
+
+      // Match the visible scanner guide (roughly 56% of viewport width and
+      // centred). Keep a little extra margin so card corners/text are not cut.
+      const cardX=0.18,cardY=0.035,cardW=0.64,cardH=0.93;
+      let rx=cardX,ry=cardY,rw=cardW,rh=cardH;
+      if(region==="name"){ry=0.04;rh=0.24}
+      if(region==="number"){ry=0.76;rh=0.20}
+
+      const sx=Math.max(0,Math.floor(vx+vw*rx));
+      const sy=Math.max(0,Math.floor(vy+vh*ry));
+      const sw=Math.min(w-sx,Math.max(1,Math.floor(vw*rw)));
+      const sh=Math.min(h-sy,Math.max(1,Math.floor(vh*rh)));
+
+      // Name/number crops get more enlargement. The full card crop is kept
+      // for diagnostics and future recognition work.
+      const scale=region==="card"?2.5:4;
       const c=document.createElement("canvas");
       c.width=Math.max(1,Math.floor(sw*scale));
       c.height=Math.max(1,Math.floor(sh*scale));
       const ctx=c.getContext("2d");
       if(!ctx)return reject(new Error("Could not prepare the image for OCR."));
       ctx.imageSmoothingEnabled=true;
+      ctx.imageSmoothingQuality="high";
       ctx.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
       resolve(c.toDataURL("image/jpeg",.95));
     };
@@ -765,13 +792,18 @@ function CardScanner(){
       });
       workerRef.current=worker;
 
-      // Run OCR over the top (name) and bottom (collector number) separately.
-      // This avoids keyboard/background text confusing the recogniser.
-      const topImage=await scannerCropDataUrl(shot,true);
-      const bottomImage=await scannerCropDataUrl(shot,false);
+      // OCR only the useful card regions. The camera capture is first mapped
+      // back to the visible 4:3 scanner viewport, then the name and collector
+      // number are read from separate crops. This prevents artwork/background
+      // text from polluting the card identity.
+      const [nameImage,numberImage,cardImage]=await Promise.all([
+        scannerCropDataUrl(shot,"name"),
+        scannerCropDataUrl(shot,"number"),
+        scannerCropDataUrl(shot,"card")
+      ]);
       const [top,bottom]=await Promise.all([
-        worker.recognize(topImage),
-        worker.recognize(bottomImage)
+        worker.recognize(nameImage),
+        worker.recognize(numberImage)
       ]);
       const combined=`${top?.data?.text||""}\n${bottom?.data?.text||""}`;
       setOcrText(combined);
