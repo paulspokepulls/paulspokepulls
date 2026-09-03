@@ -906,6 +906,89 @@ async function scannerCropDataUrl(dataUrl, region="card"){
   });
 }
 
+let openCvPromise = null;
+
+async function loadOpenCv(){
+  if(window.cv && window.cv.Mat) return window.cv;
+  if(openCvPromise) return openCvPromise;
+  openCvPromise = new Promise((resolve,reject)=>{
+    const existing=document.querySelector('script[data-opencv="1"]');
+    if(existing){
+      existing.addEventListener("load",()=>window.cv?resolve(window.cv):reject(new Error("OpenCV loaded but was not available.")),{once:true});
+      existing.addEventListener("error",()=>reject(new Error("Could not load the card detection engine.")),{once:true});
+      return;
+    }
+    const s=document.createElement("script");
+    s.src="https://docs.opencv.org/4.x/opencv.js";
+    s.async=true;
+    s.dataset.opencv="1";
+    s.onload=()=>{
+      if(window.cv && window.cv.Mat)resolve(window.cv);
+      else if(window.cv?.onRuntimeInitialized)window.cv.onRuntimeInitialized=()=>resolve(window.cv);
+      else reject(new Error("Card detection engine loaded but was not available."));
+    };
+    s.onerror=()=>reject(new Error("Could not load the card detection engine. Check your internet connection."));
+    document.head.appendChild(s);
+  });
+  return openCvPromise;
+}
+
+function scannerGuideRect(video){
+  const w=video?.videoWidth||0,h=video?.videoHeight||0;
+  if(!w||!h)return null;
+  const viewportAspect=4/3,sourceAspect=w/h;
+  let vx=0,vy=0,vw=w,vh=h;
+  if(sourceAspect>viewportAspect){vh=h;vw=Math.floor(h*viewportAspect);vx=Math.floor((w-vw)/2)}
+  else if(sourceAspect<viewportAspect){vw=w;vh=Math.floor(w/viewportAspect);vy=Math.floor((h-vh)/2)}
+  return {x:vx+vw*.18,y:vy+vh*.035,w:vw*.64,h:vh*.93,source:{vx,vy,vw,vh}};
+}
+
+function scannerDetectCard(video, canvas){
+  if(!window.cv||!video||video.readyState<2||!video.videoWidth)return null;
+  const maxW=640,scale=Math.min(1,maxW/video.videoWidth),w=Math.max(1,Math.round(video.videoWidth*scale)),h=Math.max(1,Math.round(video.videoHeight*scale));
+  canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext("2d",{willReadFrequently:true});
+  if(!ctx)return null;
+  ctx.drawImage(video,0,0,w,h);
+  let src=null,gray=null,blur=null,edges=null,contours=null,hierarchy=null;
+  try{
+    src=window.cv.imread(canvas);gray=new cv.Mat();blur=new cv.Mat();edges=new cv.Mat();
+    cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(gray,blur,new cv.Size(5,5),0,0,cv.BORDER_DEFAULT);cv.Canny(blur,edges,60,160);
+    contours=new cv.MatVector();hierarchy=new cv.Mat();
+    cv.findContours(edges,contours,hierarchy,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+    let best=null,bestScore=0;
+    for(let i=0;i<contours.size();i++){
+      const c=contours.get(i),area=cv.contourArea(c); if(area< w*h*.08){c.delete();continue;}
+      const peri=cv.arcLength(c,true),approx=new cv.Mat();cv.approxPolyDP(c,approx,.02*peri,true);
+      if(approx.rows===4){
+        const r=cv.boundingRect(approx),ratio=r.width/Math.max(1,r.height),fill=area/Math.max(1,r.width*r.height);
+        if(ratio>.50&&ratio<.90&&fill>.65){
+          const areaRatio=area/(w*h),score=areaRatio*100*fill;
+          if(score>bestScore)bestScore=score,best={x:r.x/scale,y:r.y/scale,w:r.width/scale,h:r.height/scale,area:areaRatio};
+        }
+      }
+      approx.delete();c.delete();
+    }
+    return best;
+  }catch(_){return null}
+  finally{[src,gray,blur,edges,contours,hierarchy].forEach(x=>{try{x?.delete()}catch(_){}})}
+}
+
+function scannerFrameStatus(video,card){
+  if(!video?.videoWidth||!card)return {key:"none",label:"PLACE CARD INSIDE FRAME",detail:"Keep all four corners visible",ready:false};
+  const g=scannerGuideRect(video);if(!g)return {key:"none",label:"ALIGN CARD",detail:"Keep the card inside the frame",ready:false};
+  const cx=card.x+card.w/2,cy=card.y+card.h/2,gx=g.x+g.w/2,gy=g.y+g.h/2;
+  const area=card.w*card.h,guideArea=g.w*g.h;
+  if(area<guideArea*.52)return {key:"small",label:"MOVE CLOSER",detail:"Make the card fill the frame",ready:false};
+  if(card.x<g.x-g.w*.10)return {key:"right",label:"MOVE CARD RIGHT",detail:"Keep the left edge inside the frame",ready:false};
+  if(card.x+card.w>g.x+g.w+g.w*.10)return {key:"left",label:"MOVE CARD LEFT",detail:"Keep the right edge inside the frame",ready:false};
+  if(card.y<g.y-g.h*.10)return {key:"down",label:"MOVE CARD DOWN",detail:"Keep the top edge inside the frame",ready:false};
+  if(card.y+card.h>g.y+g.h+g.h*.10)return {key:"up",label:"MOVE CARD UP",detail:"Keep the bottom/number inside the frame",ready:false};
+  if(Math.abs(cx-gx)>g.w*.10)return {key:"centre",label:cx<gx?"MOVE CARD RIGHT":"MOVE CARD LEFT",detail:"Centre the card in the frame",ready:false};
+  if(Math.abs(cy-gy)>g.h*.10)return {key:"centre",label:cy<gy?"MOVE CARD DOWN":"MOVE CARD UP",detail:"Centre the card in the frame",ready:false};
+  return {key:"ready",label:"READY TO SCAN",detail:"All four edges look visible",ready:true};
+}
+
 function CardScanner(){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
   const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
@@ -913,6 +996,8 @@ function CardScanner(){
   const [ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
   const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]);
   const [debugCrops,setDebugCrops]=useState(null);
+  const [frameStatus,setFrameStatus]=useState({key:"none",label:"PLACE CARD INSIDE FRAME",detail:"Keep all four corners visible",ready:false});
+  const detectorCanvasRef=React.useRef(null),detectorRafRef=React.useRef(null),detectorBusyRef=React.useRef(false);
 
   async function startCamera(){
     setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);
@@ -995,6 +1080,27 @@ function CardScanner(){
     };
   },[cameraOn]);
 
+  useEffect(()=>{
+    if(!cameraOn)return;
+    let cancelled=false,last=0;
+    const tick=async(now)=>{
+      if(cancelled)return;
+      detectorRafRef.current=requestAnimationFrame(tick);
+      if(now-last<350||detectorBusyRef.current)return;
+      last=now;detectorBusyRef.current=true;
+      try{
+        await loadOpenCv();
+        const canvas=detectorCanvasRef.current||(detectorCanvasRef.current=document.createElement("canvas"));
+        const card=scannerDetectCard(videoRef.current,canvas);
+        if(!cancelled)setFrameStatus(scannerFrameStatus(videoRef.current,card));
+      }catch(_){
+        if(!cancelled)setFrameStatus({key:"none",label:"ALIGN CARD",detail:"Keep the whole card inside the frame",ready:false});
+      }finally{detectorBusyRef.current=false}
+    };
+    detectorRafRef.current=requestAnimationFrame(tick);
+    return()=>{cancelled=true;if(detectorRafRef.current)cancelAnimationFrame(detectorRafRef.current);detectorRafRef.current=null};
+  },[cameraOn]);
+
   function stopCamera(){
     ++cameraGenerationRef.current;
     if(streamRef.current){
@@ -1003,6 +1109,7 @@ function CardScanner(){
     }
     if(videoRef.current)videoRef.current.srcObject=null;
     setCameraOn(false);
+    setFrameStatus({key:"none",label:"PLACE CARD INSIDE FRAME",detail:"Keep all four corners visible",ready:false});
   }
 
   async function capture(){
@@ -1223,13 +1330,13 @@ function CardScanner(){
             {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
           </div>
           {!cameraOn&&<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
-          {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
+          {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">{frameStatus.label}</div></div>}
         </div>
 
         <div className="scanner-controls">
           {!cameraOn
             ?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>
-            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
+            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":frameStatus.ready?"Capture":"Capture anyway"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
           }
         </div>
 
