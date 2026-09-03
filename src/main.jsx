@@ -633,12 +633,30 @@ function scannerNormalizeText(v){
   return String(v||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
 }
 
+function scannerCleanOcrText(v){
+  return String(v||"")
+    .replace(/[|¦]/g,"I")
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
+    .replace(/\u00a0/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+function scannerNumberish(v){
+  return String(v||"")
+    .replace(/[OoQ]/g,"0")
+    .replace(/[Il|]/g,"1")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
 function scannerExtractNumber(text){
-  const s=String(text||"").replace(/\s+/g," ");
+  const s=scannerNumberish(text);
   const patterns=[
-    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\s*\/\s*(\d{1,3})\b/i,
-    /\b(\d{1,3})\s*\/\s*(\d{1,3})\b/,
-    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\b/i
+    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\s*[/\\]\s*(\d{1,3})\b/i,
+    /\b(\d{1,3})\s*[/\\]\s*(\d{1,3})\b/,
+    /\b([A-Z]{1,5})\s*[- ]?\s*(\d{1,3})\s*[/\\]\s*(\d{1,3})/i
   ];
   for(const re of patterns){
     const m=s.match(re);
@@ -650,69 +668,88 @@ function scannerExtractNumber(text){
   return "";
 }
 
-function scannerNameCandidates(text){
+function scannerExtractNameCandidates(text){
   const raw=String(text||"");
+  const lines=raw.split(/\r?\n/).map(x=>scannerCleanOcrText(x)).filter(Boolean);
   const out=[];
-  const push=v=>{
-    const x=String(v||"").replace(/[^A-Za-zÀ-ÿ0-9\' .-]/g," ").replace(/\s+/g," ").trim();
-    if(x.length<3||x.length>40||!/[A-Za-z]/.test(x))return;
-    const key=scannerNormalizeText(x);
-    if(!key||out.some(y=>scannerNormalizeText(y)===key))return;
+  const add=v=>{
+    let x=String(v||"").trim();
+    if(!x)return;
+    x=x.replace(/^[^A-Za-zÀ-ÿ]+/g,"");
+    x=x.replace(/\b(?:STAGE\s*[12]|BASIC|HP)\b.*$/i,"");
+    x=x.replace(/\bHP\s*\d{1,3}.*$/i,"");
+    x=x.replace(/\b\d{1,3}\s*(?:HP)?$/i,"");
+    x=x.replace(/[^A-Za-zÀ-ÿ0-9' .-]/g," ").replace(/\s+/g," ").trim();
+    if(x.length<3||x.length>32||!/[A-Za-z]/.test(x))return;
+    const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d)/i;
+    if(blocked.test(x))return;
     out.push(x);
+    // OCR often glues a leading number to the card name (e.g. 42425FanRotom).
+    const glued=x.replace(/^\d+(?=[A-Za-z])/g,"");
+    if(glued&&glued!==x)out.push(glued);
+    // And it sometimes glues the name together (FanRotom).
+    const spaced=x.replace(/([a-z])([A-Z])/g,"$1 $2");
+    if(spaced!==x)out.push(spaced);
   };
-  const blocked=/^(stage|basic|item|trainer|supporter|stadium|pokemon|pok[eé]mon|hp|weakness|resistance|retreat|evolves|ability|attack|rule|illustrator|illus|©|no\.?\s*\d)/i;
-  raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).forEach(line=>{
-    const clean=line.replace(/[^A-Za-zÀ-ÿ0-9\' .-]/g," ").replace(/\s+/g," ").trim();
-    if(clean&&!blocked.test(clean))push(clean);
-    const deglued=clean.replace(/^\d{1,8}\s*/,"").replace(/([a-zà-ÿ])([A-ZÀ-Ý])/g,"$1 $2").trim();
-    if(deglued&&!blocked.test(deglued))push(deglued);
-  });
-  const embedded=raw.match(/(?:[A-ZÀ-Ý][a-zà-ÿ]{1,18}\s*){1,4}/g)||[];
-  embedded.forEach(x=>push(x));
-  return out.slice(0,30);
+  for(const line of lines){
+    const hp=line.match(/^(.+?)\s+H\s*P\s*\d{1,3}\b/i);
+    if(hp)add(hp[1]);
+    add(line);
+  }
+  // Also inspect the whole OCR blob for a common glued-name pattern.
+  const blob=scannerCleanOcrText(raw);
+  const gluedMatches=blob.match(/(?:^|\s|\d)([A-Z][A-Za-zÀ-ÿ]{2,}(?:[A-Z][A-Za-zÀ-ÿ]{2,})?)(?=\s|$)/g)||[];
+  gluedMatches.forEach(x=>add(x));
+  return [...new Set(out)];
 }
 
 function scannerExtractName(text){
-  return scannerNameCandidates(text)[0]||"";
+  return scannerExtractNameCandidates(text)[0]||"";
 }
 
-async function scannerCropDataUrl(dataUrl, region="card"){
+function scannerNameSimilarity(a,b){
+  const aa=scannerNormalizeText(a),bb=scannerNormalizeText(b);
+  if(!aa||!bb)return 0;
+  if(aa===bb)return 1;
+  if(aa.includes(bb)||bb.includes(aa))return 0.85;
+  const n=Math.max(aa.length,bb.length),prev=Array.from({length:bb.length+1},(_,i)=>i);
+  for(let i=1;i<=aa.length;i++){
+    const cur=[i];
+    for(let j=1;j<=bb.length;j++)cur[j]=Math.min(cur[j-1]+1,prev[j]+1,prev[j-1]+(aa[i-1]===bb[j-1]?0:1));
+    for(let j=0;j<cur.length;j++)prev[j]=cur[j];
+  }
+  return 1-(prev[bb.length]/n);
+}
+
+
+async function scannerCropDataUrl(dataUrl, region="name", variant=0){
   return new Promise((resolve,reject)=>{
     const img=new Image();
     img.onload=()=>{
       const w=img.naturalWidth,h=img.naturalHeight;
       if(!w||!h)return reject(new Error("Captured image has no usable dimensions."));
 
-      // The on-screen scanner guide sits over the centre of the 4:3 camera
-      // viewport, while most phones deliver a 16:9 camera frame. Because the
-      // video uses object-fit:cover, the left/right edges of the source are
-      // cropped on screen. Recreate that visible viewport first, then crop to
-      // the card guide. This removes the keyboard/desk/background cards before
-      // OCR ever sees the image.
-      const viewportAspect=4/3;
-      const sourceAspect=w/h;
-      let vx=0,vy=0,vw=w,vh=h;
-      if(sourceAspect>viewportAspect){
-        vh=h;vw=Math.floor(h*viewportAspect);vx=Math.floor((w-vw)/2);
-      }else if(sourceAspect<viewportAspect){
-        vw=w;vh=Math.floor(w/viewportAspect);vy=Math.floor((h-vh)/2);
+      // The live camera guide is inset 18% from the sides and 10% from the top.
+      // Work inside that guide so the OCR never sees the desk/background/cards behind it.
+      const gx=Math.floor(w*.18), gy=Math.floor(h*.10);
+      const gw=Math.floor(w*.64), gh=Math.floor(h*.80);
+      let sx=gx, sy=gy, sw=gw, sh=gh;
+
+      if(region==="name"){
+        sx=gx+Math.floor(gw*.035);
+        sy=gy+Math.floor(gh*.025);
+        sw=Math.floor(gw*.93);
+        sh=Math.floor(gh*.22);
+      }else if(region==="number"){
+        // Collector numbers normally live along the lower edge. Keep a wide
+        // lower band because older/promotional layouts vary slightly.
+        sx=gx+Math.floor(gw*.35);
+        sy=gy+Math.floor(gh*.82);
+        sw=Math.floor(gw*.64);
+        sh=Math.floor(gh*.16);
       }
 
-      // Match the visible scanner guide (roughly 56% of viewport width and
-      // centred). Keep a little extra margin so card corners/text are not cut.
-      const cardX=0.18,cardY=0.035,cardW=0.64,cardH=0.93;
-      let rx=cardX,ry=cardY,rw=cardW,rh=cardH;
-      if(region==="name"){ry=0.04;rh=0.24}
-      if(region==="number"){ry=0.76;rh=0.20}
-
-      const sx=Math.max(0,Math.floor(vx+vw*rx));
-      const sy=Math.max(0,Math.floor(vy+vh*ry));
-      const sw=Math.min(w-sx,Math.max(1,Math.floor(vw*rw)));
-      const sh=Math.min(h-sy,Math.max(1,Math.floor(vh*rh)));
-
-      // Name/number crops get more enlargement. The full card crop is kept
-      // for diagnostics and future recognition work.
-      const scale=region==="card"?2.5:4;
+      const scale=region==="number"?4:3;
       const c=document.createElement("canvas");
       c.width=Math.max(1,Math.floor(sw*scale));
       c.height=Math.max(1,Math.floor(sh*scale));
@@ -721,7 +758,22 @@ async function scannerCropDataUrl(dataUrl, region="card"){
       ctx.imageSmoothingEnabled=true;
       ctx.imageSmoothingQuality="high";
       ctx.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
-      resolve(c.toDataURL("image/jpeg",.95));
+
+      // Variant 0 = grayscale/contrast, variant 1 = adaptive-ish threshold.
+      const image=ctx.getImageData(0,0,c.width,c.height);
+      const d=image.data;
+      for(let i=0;i<d.length;i+=4){
+        const g=(d[i]*.299+d[i+1]*.587+d[i+2]*.114);
+        let v=g;
+        if(variant===0){
+          v=Math.max(0,Math.min(255,(g-128)*1.45+128));
+        }else{
+          v=g>150?255:0;
+        }
+        d[i]=d[i+1]=d[i+2]=v;
+      }
+      ctx.putImageData(image,0,0);
+      resolve(c.toDataURL("image/png"));
     };
     img.onerror=()=>reject(new Error("Could not prepare the captured image for OCR."));
     img.src=dataUrl;
@@ -787,109 +839,136 @@ function CardScanner(){
       const Tesseract=await loadTesseract();
       worker=await Tesseract.createWorker("eng",1,{
         logger:m=>{
-          if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
+          if(m?.status==="recognizing text"&&typeof m.progress==="number"){
+            // Keep progress moving, but reserve the final 10% for matching.
+            setOcrProgress(Math.min(90,Math.max(0,Math.round(m.progress*90))));
+          }
         }
       });
       workerRef.current=worker;
+      try{await worker.setParameters({tessedit_pageseg_mode:"7",preserve_interword_spaces:"1",user_defined_dpi:"300"})}catch(_){ }
 
-      // OCR only the useful card regions. The camera capture is first mapped
-      // back to the visible 4:3 scanner viewport, then the name and collector
-      // number are read from separate crops. This prevents artwork/background
-      // text from polluting the card identity.
-      const [nameImage,numberImage,cardImage]=await Promise.all([
-        scannerCropDataUrl(shot,"name"),
-        scannerCropDataUrl(shot,"number"),
-        scannerCropDataUrl(shot,"card")
+      // The camera guide is already card-shaped. OCR only the name and lower
+      // collector-number regions inside that guide, with two image variants
+      // each. This is much less noisy than OCRing the whole photograph.
+      const [name0,name1,num0,num1]=await Promise.all([
+        scannerCropDataUrl(shot,"name",0),
+        scannerCropDataUrl(shot,"name",1),
+        scannerCropDataUrl(shot,"number",0),
+        scannerCropDataUrl(shot,"number",1)
       ]);
-      const [top,bottom]=await Promise.all([
-        worker.recognize(nameImage),
-        worker.recognize(numberImage)
-      ]);
-      const combined=`${top?.data?.text||""}\n${bottom?.data?.text||""}`;
+
+      const results=[];
+      const runOcr=async(image,label)=>{
+        try{await worker.setParameters({tessedit_pageseg_mode:"7"})}catch(_){ }
+        const r=await worker.recognize(image);
+        results.push({label,text:r?.data?.text||""});
+        return r?.data?.text||"";
+      };
+      const nameTexts=[];const numberTexts=[];
+      nameTexts.push(await runOcr(name0,"name-contrast"));setOcrProgress(23);
+      nameTexts.push(await runOcr(name1,"name-threshold"));setOcrProgress(45);
+      numberTexts.push(await runOcr(num0,"number-contrast"));setOcrProgress(68);
+      numberTexts.push(await runOcr(num1,"number-threshold"));setOcrProgress(88);
+
+      const combined=results.map(x=>`[${x.label}]\n${x.text}`).join("\n\n");
       setOcrText(combined);
 
-      const nameCandidates=scannerNameCandidates(top?.data?.text||"");
-      const rawName=nameCandidates[0]||"";
-      const rawNumber=scannerExtractNumber(bottom?.data?.text||"")||scannerExtractNumber(combined);
-      const cleanedName=rawName.trim();
+      const nameCandidates=[...new Set(nameTexts.flatMap(scannerExtractNameCandidates))];
+      const rawNumber=numberTexts.map(scannerExtractNumber).find(Boolean)||scannerExtractNumber(nameTexts.join("\n"));
+      const cleanedName=nameCandidates[0]||"";
 
-      if(!nameCandidates.length&&!rawNumber)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
+      if(!nameCandidates.length&&!rawNumber){
+        throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
+      }
 
+      // Query TCGdex with several name candidates until we get real card
+      // results. OCR sometimes produces a bad first line, while a later
+      // candidate is the actual Pokémon name (e.g. FanRotom).
       const pools=[];
-      for(const candidate of nameCandidates.slice(0,10)){
+      const tryNames=nameCandidates.slice(0,8);
+      for(const wanted of tryNames){
         const params=new URLSearchParams();
-        params.set("name",candidate);
+        params.set("name",wanted);
         params.set("pagination:page","1");
         params.set("pagination:itemsPerPage","100");
         const r=await fetch(`https://api.tcgdex.net/v2/en/cards?${params.toString()}`);
         if(!r.ok)continue;
         const list=await r.json();
-        if(Array.isArray(list)&&list.length)pools.push({candidate,list});
+        const pool=Array.isArray(list)?list:[];
+        if(pool.length)pools.push({wanted,pool});
+        if(pool.some(x=>scannerNormalizeText(x.name)===scannerNormalizeText(wanted)))break;
       }
 
-      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^0+/,""):"";
-      const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
-
-      let pool=[];
-      let bestCandidate=cleanedName;
-      let bestNameScore=-1;
-
+      // Flatten only plausible name matches. This is deliberately conservative:
+      // a partial OCR word such as "Ere" must not turn into Cheren or another
+      // unrelated card just because TCGdex accepts substring searches.
+      const poolMap=new Map();
       for(const entry of pools){
-        const cn=scannerNormalizeText(entry.candidate);
-        for(const x of entry.list){
-          const xn=scannerNormalizeText(x.name);
-          let score=0;
-          if(xn===cn)score=100;
-          else if(xn.includes(cn)||cn.includes(xn))score=70;
-          else{
-            const words=cn.split(" " ).filter(w=>w.length>=3);
-            const hits=words.filter(w=>xn.includes(w)).length;
-            score=hits?Math.min(60,hits*20):0;
+        for(const x of entry.pool){
+          const score=tryNames.reduce((best,n)=>Math.max(best,scannerNameSimilarity(n,x.name)),0);
+          if(score>=0.72){
+            const key=String(x.id||`${x.name}-${x.localId}`);
+            const old=poolMap.get(key);
+            if(!old||score>old.__nameScore)poolMap.set(key,{...x,__nameScore:score});
           }
-          if(numberOnly){
-            const local=String(x.localId||"").replace(/^0+/,"");
-            if(local===numberOnly||local.toUpperCase()===rawNumber.toUpperCase()||(numberPrefix&&local.toUpperCase()===`${numberPrefix}${numberOnly}`))score+=100;
-          }
-          if(score>bestNameScore){bestNameScore=score;bestCandidate=entry.candidate}
         }
       }
+      let pool=[...poolMap.values()];
 
-      if(bestNameScore<20)throw new Error(`No confident TCGdex match for "${cleanedName||"the scanned text"}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame.`);
+      if(!pool.length&&rawNumber){
+        // A number without a trustworthy name is not enough to guess a card.
+        throw new Error("I could read a collector number, but not a reliable card name. Try Retake with the card larger and flatter in the frame.");
+      }
 
-      const strongest=pools.find(x=>scannerNormalizeText(x.candidate)===scannerNormalizeText(bestCandidate));
-      pool=strongest?.list||[];
-      if(numberOnly){
+      // If a number was found, use it only when it actually narrows the pool.
+      // Never let a dubious OCR number turn a correct name into an unrelated card.
+      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^0+/ ,""):"";
+      const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
+      if(numberOnly&&pool.length){
         const numbered=pool.filter(x=>{
-          const local=String(x.localId||"").replace(/^0+/,"");
-          return local===numberOnly||local.toUpperCase()===rawNumber.toUpperCase()||(numberPrefix&&local.toUpperCase()===`${numberPrefix}${numberOnly}`);
+          const local=String(x.localId||"").replace(/^0+/ ,"");
+          const localUpper=String(x.localId||"").toUpperCase();
+          return local===numberOnly || localUpper===rawNumber.toUpperCase() || (numberPrefix&&localUpper===`${numberPrefix}${numberOnly}`);
         });
         if(numbered.length)pool=numbered;
       }
 
-      if(!pool.length)throw new Error(`No TCGdex cards matched "${bestCandidate}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame.`);
+      if(!pool.length){
+        throw new Error(`No TCGdex cards matched "${cleanedName||"the scanned text"}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame.`);
+      }
 
       const detailed=await Promise.all(pool.slice(0,12).map(async x=>{
-        try{const dr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(x.id)}`);if(dr.ok)return await dr.json();}catch(_){}
+        try{
+          const dr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(x.id)}`);
+          if(dr.ok)return await dr.json();
+        }catch(_){ }
         return x;
       }));
 
       const scored=detailed.map(x=>{
         let score=0;
-        const xn=scannerNormalizeText(x.name),bn=scannerNormalizeText(bestCandidate);
-        if(xn===bn)score+=100;else if(xn.includes(bn)||bn.includes(xn))score+=60;
+        const xName=scannerNormalizeText(x.name);
+        const bestName=nameCandidates.reduce((best,n)=>Math.max(best,scannerNormalizeText(n)===xName?100:(xName.includes(scannerNormalizeText(n))||scannerNormalizeText(n).includes(xName)?60:0)),0);
+        score+=bestName;
         if(numberOnly&&String(x.localId||"").replace(/^0+/ ,"")===numberOnly)score+=100;
         if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=100;
         return {...x,scannerScore:score};
       }).sort((a,b)=>b.scannerScore-a.scannerScore);
 
       setCandidates(scored);
-      if(scored.length===1)setIdentified(scored[0]);
+      setOcrProgress(100);
+      // Only auto-select when the best result is clearly unique. If multiple
+      // printings remain, leave them for the user instead of guessing.
+      if(scored.length===1||(scored.length>1&&scored[0].scannerScore>0&&scored[0].scannerScore>scored[1].scannerScore+40)){
+        setIdentified(scored[0]);
+      }
     }catch(e){
       setError(e?.message||"Could not identify the card.");
     }finally{
       setOcrBusy(false);setOcrProgress(100);
       if(workerRef.current){
-        try{await workerRef.current.terminate()}catch(_){}
+        try{await workerRef.current.terminate()}catch(_){ }
         workerRef.current=null;
       }
     }
