@@ -611,7 +611,24 @@ function CardScanner(){
  async function startCamera(){setError("");setShot(null);setBusy(true);try{if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});streamRef.current=stream;setCameraOn(true)}catch(e){setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");setCameraOn(false)}finally{setBusy(false)}}
  useEffect(()=>{if(!cameraOn||!streamRef.current)return;const v=videoRef.current;if(!v)return;v.srcObject=streamRef.current;const play=()=>v.play().catch(()=>{});if(v.readyState>=1)play();else v.onloadedmetadata=play;return()=>{v.onloadedmetadata=null}},[cameraOn])
  function stopCamera(){if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}if(videoRef.current){videoRef.current.pause();videoRef.current.srcObject=null}setCameraOn(false)}
- async function capture(){const v=videoRef.current;if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}if(v.readyState<2||!v.videoWidth||!v.videoHeight){try{await v.play()}catch{};if(v.readyState<2||!v.videoWidth||!v.videoHeight){setError("Camera is still starting. Give it a second, then tap Capture again.");return}}setError("");const c=document.createElement("canvas");c.width=v.videoWidth;c.height=v.videoHeight;const ctx=c.getContext("2d");if(!ctx){setError("Could not capture the camera image.");return}ctx.drawImage(v,0,0,c.width,c.height);setShot(c.toDataURL("image/jpeg",.92))}
+ async function capture(){
+  const v=videoRef.current;
+  if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
+  setError("");
+  try{
+   if(v.paused) await v.play();
+   await new Promise(r=>requestAnimationFrame(r));
+   const w=v.videoWidth,h=v.videoHeight;
+   if(!w||!h) throw new Error("Camera image is not ready yet. Wait a second and try again.");
+   const c=document.createElement("canvas");c.width=w;c.height=h;
+   const ctx=c.getContext("2d");
+   if(!ctx) throw new Error("Could not create the capture canvas.");
+   ctx.drawImage(v,0,0,w,h);
+   const data=c.toDataURL("image/jpeg",.92);
+   if(!data||data.length<100) throw new Error("The camera returned an empty image. Try again.");
+   setShot(data);
+  }catch(e){setError(e?.message||"Could not capture the camera image.")}
+}
  useEffect(()=>()=>stopCamera(),[]);
  return <div className="scanner-page">
   <div className="scanner-topbar">
@@ -623,11 +640,12 @@ function CardScanner(){
   <div className="scanner-content">
    <div className="scanner-camera-wrap">
     <div className="scanner-camera">
-     {cameraOn?<video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>:<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
+     {cameraOn?<video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
+     {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}:<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
      {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
     </div>
     <div className="scanner-controls">
-     {!cameraOn?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>:<><button className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>Capture</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>}
+     {!cameraOn?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>:<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>}
     </div>
     <p className="scanner-hint">{cameraOn?"Hold the card flat, keep all four corners visible and avoid glare.":"Camera identification comes next — for now we're testing the capture workflow."}</p>
    </div>
