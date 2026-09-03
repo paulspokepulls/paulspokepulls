@@ -789,117 +789,123 @@ function CardScanner(){
     let worker=null;
     try{
       const Tesseract=await loadTesseract();
-      worker=await Tesseract.createWorker("jpn+eng",1,{
+      // English OCR is surprisingly good at Latin-script Pokémon names, even
+      // when the card itself is German/French/Spanish/etc. Japanese and
+      // Traditional Chinese need their own character models. We identify the
+      // actual card language below by matching the OCR against each TCGdex
+      // language rather than assuming Latin text means English.
+      worker=await Tesseract.createWorker("eng+jpn+chi_tra",1,{
         logger:m=>{
           if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
         }
       });
       workerRef.current=worker;
 
-      // OCR only the useful card regions. The camera capture is first mapped
-      // back to the visible 4:3 scanner viewport, then the name and collector
-      // number are read from separate crops. This prevents artwork/background
-      // text from polluting the card identity.
       const [nameImage,numberImage,cardImage]=await Promise.all([
         scannerCropDataUrl(shot,"name"),
         scannerCropDataUrl(shot,"number"),
         scannerCropDataUrl(shot,"card")
       ]);
       setDebugCrops({name:nameImage,number:numberImage,card:cardImage});
-      const [top,bottom]=await Promise.all([
-        worker.recognize(nameImage),
-        worker.recognize(numberImage)
-      ]);
-      const combined=`${top?.data?.text||""}\n${bottom?.data?.text||""}`;
+      const [top,bottom]=await Promise.all([worker.recognize(nameImage),worker.recognize(numberImage)]);
+      const topText=top?.data?.text||"",bottomText=bottom?.data?.text||"";
+      const combined=`${topText}\n${bottomText}`;
       setOcrText(combined);
 
-      const topText=top?.data?.text||"";
-      const isJapaneseCard=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(topText);
-      const tcgLanguage=isJapaneseCard?"ja":"en";
       const nameCandidates=scannerNameCandidates(topText);
-      const rawName=nameCandidates[0]||"";
-      const rawNumber=scannerExtractNumber(bottom?.data?.text||"")||scannerExtractNumber(combined);
-      const cleanedName=rawName.trim();
-
+      const rawNumber=scannerExtractNumber(bottomText)||scannerExtractNumber(combined);
+      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^[A-Z]{1,5}/i,"").replace(/^0+/,""):"";
+      const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
       if(!nameCandidates.length&&!rawNumber)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
 
-      const pools=[];
-      for(const candidate of nameCandidates.slice(0,10)){
-        const params=new URLSearchParams();
-        params.set("name",candidate);
-        params.set("pagination:page","1");
-        params.set("pagination:itemsPerPage","100");
-        const r=await fetch(`https://api.tcgdex.net/v2/${tcgLanguage}/cards?${params.toString()}`);
-        if(!r.ok)continue;
-        const list=await r.json();
-        if(Array.isArray(list)&&list.length)pools.push({candidate,list});
-      }
+      const hasKana=/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(topText);
+      const hasHan=/\p{Script=Han}/u.test(topText);
+      const hasCyrillic=/\p{Script=Cyrillic}/u.test(topText);
 
-      const numberOnly=rawNumber?rawNumber.split("/")[0].replace(/^0+/,""):"";
-      const numberPrefix=rawNumber?rawNumber.match(/^([A-Z]{1,5})/i)?.[1]?.toUpperCase():"";
+      // Script gives us a strong first choice, but Latin cards deliberately
+      // search every supported European TCGdex language. This is what lets
+      // Glurak, Dracaufeu, etc. identify as German/French rather than being
+      // forced through the English catalogue.
+      let languages;
+      if(hasKana)languages=["ja"];
+      else if(hasHan)languages=["zh-tw","ja"];
+      else if(hasCyrillic)languages=["ru"];
+      else languages=["en","de","fr","es","it","pt","pl"];
 
-      let pool=[];
-      let bestCandidate=cleanedName;
-      let bestNameScore=-1;
-
-      for(const entry of pools){
-        const cn=scannerNormalizeText(entry.candidate);
-        for(const x of entry.list){
-          const xn=scannerNormalizeText(x.name);
-          let score=0;
-          if(xn===cn)score=100;
-          else if(xn.includes(cn)||cn.includes(xn))score=70;
-          else{
-            const words=cn.split(" " ).filter(w=>w.length>=3);
-            const hits=words.filter(w=>xn.includes(w)).length;
-            score=hits?Math.min(60,hits*20):0;
-          }
-          if(numberOnly){
-            const local=String(x.localId||"").replace(/^0+/,"");
-            if(local===numberOnly||local.toUpperCase()===rawNumber.toUpperCase()||(numberPrefix&&local.toUpperCase()===`${numberPrefix}${numberOnly}`))score+=100;
-          }
-          if(score>bestNameScore){bestNameScore=score;bestCandidate=entry.candidate}
+      const languageNames={en:"English",de:"German",fr:"French",es:"Spanish",it:"Italian",pt:"Portuguese",pl:"Polish",ru:"Russian",ja:"Japanese","zh-tw":"Chinese"};
+      const hits=[];
+      for(const lang of languages){
+        for(const candidate of nameCandidates.slice(0,8)){
+          try{
+            const params=new URLSearchParams();
+            params.set("name",candidate);params.set("pagination:page","1");params.set("pagination:itemsPerPage","100");
+            const r=await fetch(`https://api.tcgdex.net/v2/${lang}/cards?${params.toString()}`);
+            if(!r.ok)continue;
+            const list=await r.json();
+            if(!Array.isArray(list))continue;
+            const cn=scannerNormalizeText(candidate);
+            for(const x of list){
+              const xn=scannerNormalizeText(x.name);let score=0;
+              if(xn===cn)score+=120;
+              else if(xn.includes(cn)||cn.includes(xn))score+=75;
+              else{
+                const words=cn.split(" ").filter(w=>w.length>=3);
+                const count=words.filter(w=>xn.includes(w)).length;
+                if(count)score+=Math.min(55,count*20);
+              }
+              if(numberOnly){
+                const local=String(x.localId||"").replace(/^0+/,"");
+                if(local===numberOnly)score+=120;
+                if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=120;
+              }
+              if(score>=40)hits.push({...x,scannerScore:score,scannerLanguage:lang,scannerLanguageName:languageNames[lang]||lang,scannerOcrName:candidate});
+            }
+          }catch(_){}
         }
       }
 
-      if(bestNameScore<20)throw new Error(`No confident TCGdex match for "${cleanedName||"the scanned text"}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame.`);
+      if(!hits.length)throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
 
-      const strongest=pools.find(x=>scannerNormalizeText(x.candidate)===scannerNormalizeText(bestCandidate));
-      pool=strongest?.list||[];
-      if(numberOnly){
-        const numbered=pool.filter(x=>{
-          const local=String(x.localId||"").replace(/^0+/,"");
-          return local===numberOnly||local.toUpperCase()===rawNumber.toUpperCase()||(numberPrefix&&local.toUpperCase()===`${numberPrefix}${numberOnly}`);
-        });
-        if(numbered.length)pool=numbered;
+      // Keep the strongest language/name interpretation for each exact card.
+      const unique=new Map();
+      for(const hit of hits){
+        const key=`${hit.scannerLanguage}:${hit.id}`;
+        if(!unique.has(key)||hit.scannerScore>unique.get(key).scannerScore)unique.set(key,hit);
       }
+      let ranked=[...unique.values()].sort((a,b)=>b.scannerScore-a.scannerScore);
+      const bestScore=ranked[0]?.scannerScore||0;
+      ranked=ranked.filter(x=>x.scannerScore>=bestScore-25).slice(0,12);
 
-      if(!pool.length)throw new Error(`No TCGdex cards matched "${bestCandidate}"${rawNumber?` (${rawNumber})`:""}. Try Retake with the card larger in frame.`);
-
-      const detailed=await Promise.all(pool.slice(0,12).map(async x=>{
-        try{const dr=await fetch(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(x.id)}`);if(dr.ok)return await dr.json();}catch(_){}
-        return x;
+      const detailed=await Promise.all(ranked.map(async x=>{
+        let detail=x;
+        try{
+          const dr=await fetch(`https://api.tcgdex.net/v2/${x.scannerLanguage}/cards/${encodeURIComponent(x.id)}`);
+          if(dr.ok)detail={...x,...await dr.json()};
+        }catch(_){}
+        let englishName=detail.name||x.name||"";
+        const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
+        if(x.scannerLanguage!=="en"&&dexId){
+          try{
+            const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
+            if(pr.ok){
+              const species=await pr.json();
+              englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
+            }
+          }catch(_){}
+        }
+        return {...detail,localName:detail.name||x.name,englishName,scannerLanguage:x.scannerLanguage,scannerLanguageName:x.scannerLanguageName,scannerScore:x.scannerScore};
       }));
 
-      const scored=detailed.map(x=>{
-        let score=0;
-        const xn=scannerNormalizeText(x.name),bn=scannerNormalizeText(bestCandidate);
-        if(xn===bn)score+=100;else if(xn.includes(bn)||bn.includes(xn))score+=60;
-        if(numberOnly&&String(x.localId||"").replace(/^0+/ ,"")===numberOnly)score+=100;
-        if(numberPrefix&&String(x.localId||"").toUpperCase()===`${numberPrefix}${numberOnly}`)score+=100;
-        return {...x,scannerScore:score};
-      }).sort((a,b)=>b.scannerScore-a.scannerScore);
-
-      setCandidates(scored);
-      if(scored.length===1)setIdentified(scored[0]);
+      const finalRanked=detailed.sort((a,b)=>b.scannerScore-a.scannerScore);
+      setCandidates(finalRanked);
+      // Auto-pick only when there is one clear winner. Otherwise make Paul
+      // confirm it instead of silently choosing the wrong printing/language.
+      if(finalRanked.length===1||(finalRanked[0]&&finalRanked[1]&&finalRanked[0].scannerScore-finalRanked[1].scannerScore>=35))setIdentified(finalRanked[0]);
     }catch(e){
       setError(e?.message||"Could not identify the card.");
     }finally{
       setOcrBusy(false);setOcrProgress(100);
-      if(workerRef.current){
-        try{await workerRef.current.terminate()}catch(_){}
-        workerRef.current=null;
-      }
+      if(workerRef.current){try{await workerRef.current.terminate()}catch(_){}workerRef.current=null}
     }
   }
 
@@ -957,8 +963,9 @@ function CardScanner(){
         {!ocrBusy&&shot&&identified&&<div className="scanner-identification">
           {identified.image?<img src={identified.image} alt={identified.name||"Identified card"}/>:null}
           <div className="scanner-identification-info">
-            <b>{identified.name}</b>
-            <small>{identified.set?.name||"Set not available"} · #{identified.localId}</small>
+            <b>{identified.englishName||identified.name}</b>
+            {identified.localName&&identified.localName!==identified.englishName?<small>{identified.localName}</small>:null}
+            <small>{identified.set?.name||"Set not available"} · #{identified.localId} · {identified.scannerLanguageName||"Language unknown"}</small>
             <small>{identified.rarity||"Rarity not available"}</small>
             <strong>✓ Exact candidate</strong>
           </div>
@@ -969,7 +976,7 @@ function CardScanner(){
           <small>OCR found multiple cards. We won't guess between different printings.</small>
           {candidates.map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c)}>
             {c.image?<img src={c.image} alt=""/>:null}
-            <span><b>{c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
+            <span><b>{c.englishName||c.name} · #{c.localId}</b><small>{c.localName&&c.localName!==c.englishName?`${c.localName} · `:""}{c.set?.name||"Unknown set"} · {c.scannerLanguageName||"Unknown language"} · {c.rarity||"Card"}</small></span>
           </button>)}
         </div>}
 
