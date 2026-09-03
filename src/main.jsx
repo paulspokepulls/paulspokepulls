@@ -645,49 +645,40 @@ function scannerOcrNumericToken(v){
   return s.split("").map(ch=>/\d/.test(ch)?ch:(map[ch]||"")).join("");
 }
 
-function scannerExtractNumberInfo(text){
+function scannerExtractNumberCandidates(text){
   const s=String(text||"").normalize("NFKC").replace(/\s+/g," ");
   const candidates=[];
   const add=(prefix,local,total,confidence)=>{
     local=String(local||"");total=String(total||"");
     if(!/^\d{1,3}$/.test(local)||!/^\d{1,3}$/.test(total))return;
-    // Do not let OCR garbage such as "x/2" become a collector number.
     if(Number(total)<5)return;
     candidates.push({prefix:String(prefix||"").toUpperCase(),localId:local,total,display:`${String(prefix||"").toUpperCase()}${local}/${total}`,confidence});
   };
-
-  // Clean numeric readings are strongest.
   for(const re of [
     /\b([A-Z]{1,6})\s*[- ]?\s*(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/i,
     /\b(\d{1,3})\s*[\/|]\s*(\d{1,3})\b/
   ]){
-    const m=s.match(re);
-    if(!m)continue;
-    if(m.length===4)add(m[1],m[2],m[3],100);
-    else add("",m[1],m[2],100);
+    const m=s.match(re); if(!m)continue;
+    if(m.length===4)add(m[1],m[2],m[3],100); else add("",m[1],m[2],100);
   }
-
-  // Common Tesseract substitutions around the slash. Only accept the result
-  // when BOTH sides become valid numbers.
   const noisy=/([A-Za-z0-9]{1,10})\s*[\/|]\s*([A-Za-z0-9]{1,6})/g;
   let m;
   while((m=noisy.exec(s))){
-    const local=scannerOcrNumericToken(m[1]);
-    const total=scannerOcrNumericToken(m[2]);
+    const local=scannerOcrNumericToken(m[1]),total=scannerOcrNumericToken(m[2]);
     if(!local||!total||local.length>3||total.length>3)continue;
     add("",local,total,70);
   }
-
-  // If the same number appears in more than one OCR pass, its confidence is
-  // accumulated. This makes the second full-card pass useful when the first
-  // crop misreads 083 as 003.
   const grouped=new Map();
   for(const c of candidates){
     const key=`${c.prefix}|${scannerLocalIdKey(c.localId)}|${c.total}`;
     const prev=grouped.get(key);
     grouped.set(key,prev?{...prev,confidence:prev.confidence+c.confidence}:c);
   }
-  return [...grouped.values()].sort((a,b)=>b.confidence-a.confidence)[0]||null;
+  return [...grouped.values()].sort((a,b)=>b.confidence-a.confidence);
+}
+
+function scannerExtractNumberInfo(text){
+  return scannerExtractNumberCandidates(text)[0]||null;
 }
 
 function scannerExtractNumber(text){
@@ -1049,244 +1040,157 @@ function CardScanner(){
     let worker=null;
     try{
       const Tesseract=await loadTesseract();
-      worker=await Tesseract.createWorker("jpn+eng",1,{
-        logger:m=>{
-          if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*100));
-        }
-      });
-      workerRef.current=worker;
-
       const [nameImage,numberImage,cardImage]=await Promise.all([
-        scannerCropDataUrl(shot,"name"),
-        scannerCropDataUrl(shot,"number"),
-        scannerCropDataUrl(shot,"card")
+        scannerCropDataUrl(shot,"name"),scannerCropDataUrl(shot,"number"),scannerCropDataUrl(shot,"card")
       ]);
       setDebugCrops({name:nameImage,number:numberImage,card:cardImage});
 
-      // Read the name and collector number separately. The collector number is
-      // deliberately treated as the strongest identifier because a bad OCR
-      // reading of a Japanese name must never send us into an English fuzzy
-      // search for unrelated Pokémon.
+      // Keep English OCR separate from Japanese OCR. jpn+eng on every card was
+      // the regression that made previously reliable English scans fail.
+      worker=await Tesseract.createWorker("eng",1,{logger:m=>{
+        if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*35));
+      }});
+      workerRef.current=worker;
+
       const top=await worker.recognize(nameImage);
       const topText=top?.data?.text||"";
-      setOcrProgress(30);
-
-      // A slightly small/misplaced card can make the dedicated name crop miss
-      // the Pokémon name. The full card crop gives the name OCR a second chance.
+      setOcrProgress(20);
       let cardNameText="";
       try{
-        const cardName=await worker.recognize(cardImage);
-        cardNameText=cardName?.data?.text||"";
-      }catch(_){}
-      setOcrProgress(50);
+        await worker.setParameters({tessedit_pageseg_mode:"11"});
+        const cardName=await worker.recognize(cardImage);cardNameText=cardName?.data?.text||"";
+      }catch(_){ }
+      setOcrProgress(35);
 
-      // Collector numbers get two independent OCR passes. The dedicated crop
-      // is single-line; the full card uses sparse-text mode. We combine both
-      // results so repeated agreement wins instead of blindly trusting the
-      // first hallucinated number.
-      let bottomText="";
-      let cardNumberText="";
+      let bottomText="",cardNumberText="";
       try{
-        await worker.setParameters({
-          tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-",
-          tessedit_pageseg_mode:"7"
-        });
-      }catch(_){}
-      try{
-        const bottom=await worker.recognize(numberImage);
-        bottomText=bottom?.data?.text||"";
-      }catch(_){}
+        await worker.setParameters({tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-",tessedit_pageseg_mode:"7"});
+        const bottom=await worker.recognize(numberImage);bottomText=bottom?.data?.text||"";
+      }catch(_){ }
+      setOcrProgress(50);
       try{
         await worker.setParameters({tessedit_pageseg_mode:"11"});
-        const cardNumber=await worker.recognize(cardImage);
-        cardNumberText=cardNumber?.data?.text||"";
-      }catch(_){}
+        const cardNumber=await worker.recognize(cardImage);cardNumberText=cardNumber?.data?.text||"";
+      }catch(_){ }
 
       const combined=`${topText}\n${cardNameText}\n${bottomText}\n${cardNumberText}`;
       setOcrText(combined);
-
-      const nameCandidates=scannerNameCandidates(`${topText}\n${cardNameText}`);
-      const numberInfo=scannerExtractNumberInfo(combined);
+      const numberCandidates=scannerExtractNumberCandidates(combined);
+      const numberInfo=numberCandidates[0]||null;
       const rawNumber=numberInfo?.display||"";
-      if(!nameCandidates.length&&!numberInfo)throw new Error("I couldn't read the card name or collector number. Try a clearer, flatter photo.");
+      const englishNames=scannerNameCandidates(`${topText}\n${cardNameText}`).filter(x=>scannerScript(x)==="latin");
 
-      const script=scannerScript(topText);
-      let languages;
-      if(script==="ja")languages=["ja"];
-      else if(script==="zh-tw")languages=["zh-tw","ja"];
-      else if(script==="ru")languages=["ru"];
-      else languages=["en","de","fr","es","it","pt","pl"];
+      async function searchLanguage(lang,names){
+        const found=new Map();
+        for(const candidate of names.slice(0,8)){
+          const queries=[];
+          // Search each plausible OCR number, not just the first one. A second
+          // OCR pass may read 083 correctly after the first reads 003.
+          const nums=numberCandidates.slice(0,4);
+          if(nums.length){
+            for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
+          }
+          queries.push({name:`eq:${candidate}`,_numberConfidence:0});
+          queries.push({name:candidate,_numberConfidence:0});
+          for(const q of queries){
+            try{
+              const params=new URLSearchParams();
+              params.set("name",q.name);if(q.localId)params.set("localId",q.localId);
+              params.set("pagination:page","1");params.set("pagination:itemsPerPage","100");
+              const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards?${params.toString()}`);
+              if(!r.ok)continue;
+              const list=await r.json();if(!Array.isArray(list))continue;
+              const cn=scannerNormalizeText(candidate);
+              for(const x of list){
+                const xn=scannerNormalizeText(x.name);let score=0;
+                if(xn===cn)score+=500;else if(xn.includes(cn)||cn.includes(xn))score+=180;else continue;
+                if(q.localId){
+                  const sameLocal=scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId);
+                  if(sameLocal)score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
+                }
+                found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate,scannerNumberConfidence:Number(q._numberConfidence||0)});
+              }
+            }catch(_){ }
+          }
+        }
+        return [...found.values()];
+      }
 
       const languageNames={en:"English",de:"German",fr:"French",es:"Spanish",it:"Italian",pt:"Portuguese",pl:"Polish",ru:"Russian",ja:"Japanese","zh-tw":"Chinese Traditional"};
-
-      // NUMBER-FIRST PATH
-      // For non-Latin cards, an exact collector number plus set card-count
-      // match is far safer than trying to translate/fuzz a Japanese OCR name.
-      if(numberInfo&&(script==="ja"||script==="zh-tw"||script==="ru")){
-        const numberHits=await scannerFindByNumber(script,numberInfo,nameCandidates);
-        if(numberHits.length){
-          const detailed=await Promise.all(numberHits.slice(0,12).map(async x=>{
-            let englishName=x.name||"";
-            const dexId=Array.isArray(x.dexId)?x.dexId[0]:x.dexId;
-            if(script!=="en"&&dexId){
-              try{
-                const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-                if(pr.ok){
-                  const species=await pr.json();
-                  englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
-                }
-              }catch(_){}
-            }
-            return {...x,localName:x.name,englishName};
-          }));
-          const best=detailed[0];
-          const second=detailed[1];
-          const exactLocalized=detailed.filter(x=>x.scannerExactLocalizedName&&x.scannerNumberConfirmed);
-          // Only auto-select the number-first result when the OCR number and
-          // localized Pokémon name agree. A wrong OCR number such as 003/106
-          // on a Vigoroth 083/106 must NOT turn into Durant #003 just because
-          // the denominator happens to be correct. In that case we fall
-          // through to the name path below, where the denominator can still
-          // distinguish the correct Vigoroth printing.
-          if(exactLocalized.length===1){
-            setCandidates(detailed);
-            setIdentified(exactLocalized[0]);
-            return;
-          }
-          // Number-only matches are useful as candidates, but never strong
-          // enough to auto-select a different Pokémon when localized name OCR
-          // exists. Let the name path reconcile the conflicting OCR signals.
-          if(!nameCandidates.length){
-            const winner=best;
-            const secondBest=second;
-            const clear=!!winner&&winner.scannerDenominatorConfirmed&&
-              (detailed.length===1||winner.scannerScore-(secondBest?.scannerScore||0)>=250);
-            setCandidates(detailed);
-            if(clear)setIdentified(winner);
-            else if(!detailed.length)setCandidates([]);
-            return;
-          }
-          // Deliberately do not return: continue into NAME PATH.
-        }
-      }
-
-      // NAME PATH
-      // Latin cards still use multilingual name search. Japanese/Asian cards
-      // can also reach this path if their collector number is unavailable.
-      const hits=[];
-      for(const lang of languages){
-        for(const candidate of nameCandidates.slice(0,8)){
+      async function enrich(list){
+        return Promise.all(list.slice(0,30).map(async x=>{
+          let detail=x;
           try{
-            const params=new URLSearchParams();
-            params.set("name",candidate);
-            params.set("pagination:page","1");
-            params.set("pagination:itemsPerPage","100");
-            const r=await fetch(`https://api.tcgdex.net/v2/${lang}/cards?${params.toString()}`);
-            if(!r.ok)continue;
-            const list=await r.json();
-            if(!Array.isArray(list))continue;
-            const cn=scannerNormalizeText(candidate);
-            for(const x of list){
-              const xn=scannerNormalizeText(x.name);let score=0;
-              if(xn===cn)score+=180;
-              else if(xn.includes(cn)||cn.includes(xn))score+=80;
-              else{
-                const words=cn.split(" ").filter(w=>w.length>=3);
-                const count=words.filter(w=>xn.includes(w)).length;
-                if(count)score+=Math.min(55,count*20);
-              }
-              // If a collector number exists, it is a hard discriminator:
-              // cards with a different localId are not allowed to win merely
-              // because their name happens to be similar.
-              if(numberInfo){
-                const local=scannerLocalIdKey(x.localId);
-                if(local===scannerLocalIdKey(numberInfo.localId))score+=220;
-                // Do not heavily punish an exact localized name for a number
-                // that may simply be an OCR hallucination. The denominator is
-                // scored later from the actual TCGdex set card count.
-                else if(!(script!=="latin"&&xn===cn))score-=60;
-              }
-              if(score>=60)hits.push({...x,scannerScore:score,scannerLanguage:lang,scannerLanguageName:languageNames[lang]||lang,scannerOcrName:candidate});
-            }
-          }catch(_){}
-        }
-      }
-
-      if(!hits.length)throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
-
-      // For Japanese/Asian cards, never let a random OCR phrase elsewhere in
-      // the crop outrank the actual Pokémon name. If we have a collector
-      // number, first restrict the candidates to that localId. Then, when an
-      // exact localized name exists, keep only that exact-name result.
-      if(numberInfo&&(script==="ja"||script==="zh-tw"||script==="ru")){
-        // If we have an exact localized Pokémon name, keep ALL printings of
-        // that Pokémon and let the denominator/set data resolve the printing.
-        // Do not let a bad localId OCR reading (e.g. 003 instead of 083)
-        // discard the correct named card before we get a chance to score /106.
-        const exactLocalized=hits.filter(x=>{
-          const xn=scannerNormalizeText(x.name);
-          return nameCandidates.some(n=>scannerNormalizeText(n)===xn);
-        });
-        if(exactLocalized.length){
-          hits.length=0;
-          hits.push(...exactLocalized);
-        }else{
-          const sameNumber=hits.filter(x=>scannerLocalIdKey(x.localId)===scannerLocalIdKey(numberInfo.localId));
-          if(sameNumber.length){
-            hits.length=0;
-            hits.push(...sameNumber);
+            const dr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(x.scannerLanguage)}/cards/${encodeURIComponent(x.id)}`);
+            if(dr.ok)detail={...x,...await dr.json()};
+          }catch(_){ }
+          let englishName=detail.name||x.name||"";
+          const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
+          if(x.scannerLanguage!=="en"&&dexId){
+            try{
+              const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
+              if(pr.ok){const species=await pr.json();englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;}
+            }catch(_){ }
           }
+          let score=Number(x.scannerScore||0);
+          const setTotal=Number(detail?.set?.cardCount?.total),setOfficial=Number(detail?.set?.cardCount?.official);
+          if(numberCandidates.length){
+            const matchingNumber=numberCandidates.find(n=>scannerLocalIdKey(n.localId)===scannerLocalIdKey(detail.localId));
+            if(matchingNumber){
+              score+=matchingNumber.confidence*2.5;
+              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total))score+=350;
+              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total))score+=300;
+            }else if(x.scannerLanguage==="en")score-=80;
+          }
+          return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerDenominatorConfirmed:numberCandidates.some(n=>(Number.isFinite(setTotal)&&setTotal===Number(n.total))||(Number.isFinite(setOfficial)&&setOfficial===Number(n.total)))};
+        }));
+      }
+
+      // ENGLISH-FIRST. This restores the old successful path and only falls
+      // through to other languages if English cannot confidently identify it.
+      let hits=englishNames.length?await searchLanguage("en",englishNames):[];
+      if(hits.length){
+        const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
+        setCandidates(ranked.slice(0,12));
+        const best=ranked[0],second=ranked[1];
+        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
+          setIdentified(best);return;
+        }
+      }
+      setOcrProgress(70);
+
+      // Japanese fallback. This is deliberately separate so English cards never
+      // pay the accuracy penalty of the combined jpn+eng model.
+      if(workerRef.current===worker){try{await worker.terminate()}catch(_){ }worker=null;workerRef.current=null;}
+      const jaWorker=await Tesseract.createWorker("jpn",1,{logger:m=>{
+        if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(70+Math.round(m.progress*15));
+      }});
+      worker=jaWorker;workerRef.current=jaWorker;
+      let jaNameText="",jaCardText="";
+      try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||"";}catch(_){ }
+      try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||"";}catch(_){ }
+      const jaNames=scannerJapaneseNameCandidates(`${jaNameText}\n${jaCardText}`);
+      const jaHits=jaNames.length?await searchLanguage("ja",jaNames):[];
+      if(jaHits.length){
+        const ranked=(await enrich(jaHits)).sort((a,b)=>b.scannerScore-a.scannerScore);
+        // Exact localized name is mandatory for automatic Japanese selection.
+        // A bad number OCR can only add evidence; it cannot replace the name.
+        const exact=ranked.filter(x=>jaNames.some(n=>scannerNormalizeText(n)===scannerNormalizeText(x.name)));
+        const pool=exact.length?exact:ranked;
+        setCandidates(pool.slice(0,12));
+        const best=pool[0],second=pool[1];
+        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
+          setIdentified(best);return;
         }
       }
 
-      const unique=new Map();
-      for(const hit of hits){
-        const key=`${hit.scannerLanguage}:${hit.id}`;
-        if(!unique.has(key)||hit.scannerScore>unique.get(key).scannerScore)unique.set(key,hit);
+      if(hits.length){
+        setCandidates((await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12));
+        return;
       }
-
-      let ranked=[...unique.values()].sort((a,b)=>b.scannerScore-a.scannerScore);
-      const bestScore=ranked[0]?.scannerScore||0;
-      ranked=ranked.filter(x=>x.scannerScore>=bestScore-25).slice(0,12);
-
-      const detailed=await Promise.all(ranked.map(async x=>{
-        let detail=x;
-        try{
-          const dr=await fetch(`https://api.tcgdex.net/v2/${x.scannerLanguage}/cards/${encodeURIComponent(x.id)}`);
-          if(dr.ok)detail={...x,...await dr.json()};
-        }catch(_){}
-        let englishName=detail.name||x.name||"";
-        const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
-        if(x.scannerLanguage!=="en"&&dexId){
-          try{
-            const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-            if(pr.ok){
-              const species=await pr.json();
-              englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
-            }
-          }catch(_){}
-        }
-        let scannerScore=x.scannerScore;
-        const localizedExact=script!=="latin"&&scannerNormalizeText(detail.name||x.name)===scannerNormalizeText(nameCandidates[0]||"");
-        const setTotal=Number(detail?.set?.cardCount?.total);
-        const setOfficial=Number(detail?.set?.cardCount?.official);
-        if(numberInfo&&localizedExact){
-          // The denominator is much more reliable than the first digits of the
-          // collector number. For example, OCR may read 083 as 003 while still
-          // reading /106 correctly. Reward an exact localized name + /106
-          // combination enough to recover the correct printing.
-          if(Number.isFinite(setTotal)&&Number.isFinite(Number(numberInfo.total))&&setTotal===Number(numberInfo.total))scannerScore+=500;
-          else if(Number.isFinite(setOfficial)&&Number.isFinite(Number(numberInfo.total))&&setOfficial===Number(numberInfo.total))scannerScore+=400;
-        }
-        return {...detail,localName:detail.name||x.name,englishName,scannerLanguage:x.scannerLanguage,scannerLanguageName:x.scannerLanguageName,scannerScore,scannerDenominatorConfirmed:(Number.isFinite(setTotal)&&Number.isFinite(Number(numberInfo?.total))&&setTotal===Number(numberInfo.total))||(Number.isFinite(setOfficial)&&Number.isFinite(Number(numberInfo?.total))&&setOfficial===Number(numberInfo.total))};
-      }));
-
-      const finalRanked=detailed.sort((a,b)=>b.scannerScore-a.scannerScore);
-      setCandidates(finalRanked);
-      if(finalRanked.length===1||(finalRanked[0]&&finalRanked[1]&&finalRanked[0].scannerScore-finalRanked[1].scannerScore>=35))setIdentified(finalRanked[0]);
-    }catch(e){
-      setError(e?.message||"Could not identify the card.");
-    }finally{
+      throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
+    }catch(e){setError(e?.message||"Could not identify the card.");}
+    finally{
       setOcrBusy(false);setOcrProgress(100);
       if(workerRef.current){try{await workerRef.current.terminate()}catch(_){ }workerRef.current=null}
     }
