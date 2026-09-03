@@ -640,8 +640,10 @@ function CardScanner(){
   <div className="scanner-content">
    <div className="scanner-camera-wrap">
     <div className="scanner-camera">
-     {cameraOn?<video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
-     {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}:<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
+     {cameraOn ? <div className="scanner-video-layer">
+      <video ref={videoRef} playsInline muted autoPlay className="scanner-video"/>
+      {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
+     </div> : <div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
      {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
     </div>
     <div className="scanner-controls">
