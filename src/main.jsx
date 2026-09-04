@@ -1415,9 +1415,9 @@ function CardScanner({locations=[]}){
 
     <div className="scanner-content">
       <div className="scanner-camera-wrap">
-        <div className="scanner-camera">
-          <div className="scanner-video-layer" style={{display:cameraOn?"block":"none",visibility:"visible",opacity:1}}>
-            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",visibility:"visible",opacity:1,width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
+        <div className="scanner-camera" style={{position:"relative",width:"100%",aspectRatio:"4 / 3",minHeight:320,overflow:"hidden",background:"#111",borderRadius:16}}>
+          <div className="scanner-video-layer" style={{position:"absolute",inset:0,display:cameraOn?"block":"none",visibility:"visible",opacity:1,zIndex:1}}>
+            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{position:"absolute",inset:0,display:"block",visibility:"visible",opacity:1,width:"100%",height:"100%",objectFit:"cover",background:"#111",zIndex:1}}/>
           </div>
           {!cameraOn&&<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
