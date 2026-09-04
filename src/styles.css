@@ -73,3 +73,275 @@ button:not(.ghost):not(.x):not(.suggestion):not(.editbtn):not(.deletebtn):hover{
 .scanner-ocr-details{margin-top:14px;font-size:11px}.scanner-ocr-details img{width:100%;max-height:180px;object-fit:contain;background:#eee;border-radius:6px}
 @media(max-width:850px){.scanner-content{grid-template-columns:1fr;padding:0 12px 24px}.scanner-result{min-height:180px}.scanner-topbar{padding:12px}.scanner-camera{min-height:240px}}
 @media(max-width:650px){.scanner-title{flex:1}.scanner-back{padding:8px 9px}.scanner-camera{border-radius:12px;min-height:0}.scanner-controls{justify-content:stretch}.scanner-controls button{flex:1}.scanner-capture{min-width:0}.scanner-identify-actions{justify-content:stretch}.scanner-identify-actions button{flex:1}.scanner-identification img{width:100px}.scanner-result{padding:13px}}
+
+
+/* Scanner polish */
+.scanner-mode-switch{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:0 auto 12px;
+  max-width:1180px;
+}
+.scanner-mode-switch button{
+  min-height:48px;
+  padding:10px 14px;
+  border-radius:12px;
+  border:1px solid #4b4542;
+  background:#262222;
+  color:#eee;
+  font-weight:850;
+  transition:.15s ease;
+}
+.scanner-mode-switch button.selected{
+  background:#7f1d1d;
+  border-color:#b63a3a;
+  box-shadow:0 4px 14px #7f1d1d33;
+}
+.scanner-mode-fields{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:0 auto 12px;
+  max-width:1180px;
+}
+.scanner-mode-fields label{
+  margin:0;
+}
+.scanner-mode-fields input,
+.scanner-mode-fields select{
+  background:#262222;
+  color:#fff;
+  border-color:#49413e;
+}
+.scanner-sold-field{
+  grid-template-columns:1fr;
+}
+.scanner-sold-field small{
+  display:block;
+  margin-top:-4px;
+  color:#aaa;
+}
+.scanner-queue-item{
+  transition:border-color .15s ease, transform .15s ease;
+}
+.scanner-queue-item:hover{
+  border-color:#684444 !important;
+}
+
+@media(max-width:850px){
+  .scanner-mode-switch,
+  .scanner-mode-fields{
+    width:calc(100% - 24px);
+  }
+}
+
+@media(max-width:650px){
+  /* On phones the scanner is effectively an app screen; hide the
+     surrounding admin chrome and use the scanner's own back button. */
+  .scanner-mode > header,
+  .scanner-mode > .adminmain > .admintitle,
+  .scanner-mode > .adminmain > .tabs{
+    display:none;
+  }
+
+  .scanner-mode .adminmain{
+    padding:0;
+    max-width:none;
+  }
+
+  .scanner-page{
+    min-height:100dvh;
+    background:#171414;
+    color:#f5f1ee;
+  }
+
+  .scanner-topbar{
+    position:sticky;
+    top:0;
+    z-index:30;
+    min-height:62px;
+    padding:9px 12px;
+    background:#171414ee;
+    border-bottom:1px solid #332d2b;
+    backdrop-filter:blur(10px);
+  }
+
+  .scanner-back{
+    min-height:42px;
+    padding:8px 11px !important;
+    background:#2a2523 !important;
+    border-color:#4a413d !important;
+    color:#fff !important;
+    white-space:nowrap;
+  }
+
+  .scanner-title{
+    gap:0;
+    text-align:center;
+    line-height:1.05;
+  }
+  .scanner-title .eyebrow{
+    font-size:9px;
+  }
+  .scanner-title b{
+    font-size:15px;
+  }
+
+  .scanner-step{
+    padding:7px 9px;
+    border-radius:999px;
+    background:#282322;
+    color:#d7cfcb;
+    border:1px solid #403835;
+    font-size:10px;
+  }
+
+  .scanner-alert{
+    margin:8px 12px;
+  }
+
+  .scanner-mode-switch{
+    width:calc(100% - 24px);
+    gap:6px;
+    margin:10px 12px;
+  }
+  .scanner-mode-switch button{
+    min-height:46px;
+    border-radius:11px;
+    font-size:15px;
+  }
+
+  .scanner-mode-fields{
+    width:calc(100% - 24px);
+    grid-template-columns:1fr 1fr;
+    gap:7px;
+    margin:0 12px 10px;
+  }
+  .scanner-mode-fields label{
+    color:#cfc7c3;
+    font-size:10px;
+  }
+  .scanner-mode-fields input,
+  .scanner-mode-fields select{
+    min-height:42px;
+    padding:9px 10px;
+    border-radius:10px;
+  }
+
+  .scanner-sold-field{
+    grid-template-columns:1fr;
+  }
+
+  .scanner-content{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    padding:0 12px 22px;
+  }
+
+  .scanner-camera{
+    aspect-ratio:4/3;
+    width:100%;
+    min-height:0 !important;
+    border-radius:13px;
+    box-shadow:0 8px 24px #0008;
+  }
+
+  .scanner-frame{
+    left:17%;
+    width:66%;
+  }
+
+  .scanner-controls{
+    margin-top:8px;
+    gap:7px;
+  }
+  .scanner-controls button{
+    min-height:46px;
+    border-radius:11px;
+  }
+  .scanner-capture{
+    flex:1.5;
+  }
+
+  .scanner-hint{
+    margin:7px 8px 0;
+    font-size:10px;
+    line-height:1.4;
+  }
+
+  .scanner-result{
+    padding:12px;
+    min-height:0;
+    background:#1b1716;
+    border-color:#37302d;
+    border-radius:13px;
+    color:#f5f1ee;
+  }
+
+  .scanner-result-head{
+    margin-bottom:10px;
+  }
+  .scanner-result-head .ghost{
+    padding:7px 9px;
+    background:#292422;
+    border-color:#49413e;
+    color:#fff;
+  }
+
+  .scanner-result .tag{
+    background:#292422 !important;
+    border:1px solid #3d3633;
+    color:#ddd5d1;
+    border-radius:999px;
+  }
+
+  .scanner-primary{
+    min-height:44px;
+    border-radius:10px !important;
+  }
+
+  .scanner-queue-item{
+    padding:9px !important;
+    margin-bottom:7px !important;
+    border-radius:12px !important;
+    background:#171313 !important;
+  }
+
+  .scanner-queue-item > div:first-child{
+    gap:8px !important;
+  }
+
+  .scanner-queue-item img{
+    width:50px !important;
+    height:68px !important;
+  }
+
+  .scanner-queue-item input{
+    min-height:38px;
+    padding:7px 9px;
+    background:#262222;
+    color:#fff;
+    border-color:#48403d;
+  }
+
+  .scanner-queue-item .ghost{
+    min-height:40px;
+    background:#292422;
+    border-color:#49413e;
+    color:#fff;
+  }
+
+  .scanner-empty{
+    min-height:120px;
+  }
+
+  .scanner-ocr-details{
+    overflow:hidden;
+  }
+
+  .scanner-candidate{
+    padding:7px !important;
+  }
+}
