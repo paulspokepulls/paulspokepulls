@@ -175,7 +175,7 @@ function Admin({session,publicSite}){
  {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
- {tab==="scanner"&&<CardScanner locations={locations}/>}
+ {tab==="scanner"&&<CardScanner locations={locations} onBack={()=>setTab("dashboard")}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={sets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
@@ -926,7 +926,7 @@ async function scannerCropDataUrl(dataUrl, region="card"){
   });
 }
 
-function CardScanner({locations=[]}){
+function CardScanner({locations=[],onBack}){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
   const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
 
