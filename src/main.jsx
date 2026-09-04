@@ -921,6 +921,7 @@ function CardScanner({locations=[]}){
     }catch(_){return []}
   });
   const [processingQueue,setProcessingQueue]=useState(false);
+  const [manualItemId,setManualItemId]=useState(null),[manualQuery,setManualQuery]=useState(""),[manualLanguage,setManualLanguage]=useState("en"),[manualResults,setManualResults]=useState([]),[manualBusy,setManualBusy]=useState(false);
 
   useEffect(()=>{
     try{
@@ -1323,6 +1324,50 @@ function CardScanner({locations=[]}){
     setProcessingQueue(false);
   }
 
+  function openManualSearch(item){
+    setManualItemId(item?.id||null);
+    setManualQuery("");
+    setManualLanguage(item?.identified?.scannerLanguage||"en");
+    setManualResults([]);
+    setError("");
+  }
+
+  function closeManualSearch(){
+    setManualItemId(null);setManualQuery("");setManualResults([]);setManualBusy(false);
+  }
+
+  async function searchManualCards(){
+    const q=String(manualQuery||"").trim();
+    if(!q){setError("Enter a Pokémon name or collector number to search.");return}
+    setManualBusy(true);setError("");setManualResults([]);
+    try{
+      const numberMatch=q.match(/(?:#|^|\s)(\d{1,4})(?:\s*\/\s*(\d{1,4}))?/);
+      const localId=numberMatch?.[1]||"";
+      const nameQuery=q.replace(/#?\d{1,4}\s*\/\s*\d{1,4}/g," ").replace(/#\d{1,4}/g," ").trim();
+      const params=new URLSearchParams();
+      if(nameQuery)params.set("name",nameQuery);
+      if(localId)params.set("localId",localId);
+      params.set("pagination:page","1");params.set("pagination:itemsPerPage","30");
+      const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(manualLanguage)}/cards?${params.toString()}`);
+      if(!r.ok)throw new Error("TCGdex manual search failed.");
+      const list=await r.json();
+      if(!Array.isArray(list)||!list.length){setError("No cards found. Try the Pokémon name, collector number, or another language.");return}
+      const languageNames={en:"English",de:"German",fr:"French",es:"Spanish",it:"Italian",pt:"Portuguese",pl:"Polish",ru:"Russian",ja:"Japanese","zh-tw":"Chinese Traditional"};
+      const results=await Promise.all(list.slice(0,20).map(async x=>{
+        let detail=x;
+        try{const dr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(manualLanguage)}/cards/${encodeURIComponent(x.id)}`);if(dr.ok)detail={...x,...await dr.json()}}catch(_){}
+        let englishName=detail.name||x.name||"";
+        const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
+        if(manualLanguage!=="en"&&dexId){
+          try{const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);if(pr.ok){const species=await pr.json();englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName}}catch(_){}
+        }
+        return {...detail,englishName,scannerLanguage:manualLanguage,scannerLanguageName:languageNames[manualLanguage]||manualLanguage,scannerManual:true};
+      }));
+      setManualResults(results);
+    }catch(e){setError(e?.message||"Could not search TCGdex.")}
+    finally{setManualBusy(false)}
+  }
+
   function chooseCandidate(card,itemId=null){
     setIdentified(card);setCandidates([]);
     if(itemId)updateQueueItem(itemId,{status:"review",identified:card,candidates:[],error:""});
@@ -1390,15 +1435,41 @@ function CardScanner({locations=[]}){
         const {data:rows,error:invError}=await supabase.from("inventory").select("id,quantity").eq("card_id",card.id).gt("quantity",0).order("created_at",{ascending:true}).limit(1);
         if(invError)throw invError;
         if(!rows?.[0])throw new Error("No stock available for this card.");
-        const next=Math.max(0,Number(rows[0].quantity||0)-1);
-        const {error:updateError}=await supabase.from("inventory").update({quantity:next}).eq("id",rows[0].id);
-        if(updateError)throw updateError;
+        // Sold scans are only marked ready here. Inventory is changed when
+        // the user explicitly completes the sale batch at the end of the market.
       }
-      updateQueueItem(item.id,{status:"accepted",processedAt:new Date().toISOString()});
+      updateQueueItem(item.id,{status:item.mode==="sold"?"sale_pending":"accepted",processedAt:new Date().toISOString(),error:""});
     }catch(e){
       setError(e?.message||"Could not apply this queue item.");
       updateQueueItem(item.id,{status:"review",error:e?.message||"Could not apply this queue item."});
     }finally{setBusy(false)}
+  }
+
+  async function completeSaleQueue(){
+    const sales=reviewQueue.filter(x=>x.mode==="sold"&&x.status==="sale_pending"&&x.identified?.id);
+    if(!sales.length)return;
+    if(!supabase){setError("Supabase is not connected.");return}
+    setBusy(true);setError("");
+    try{
+      for(const item of sales){
+        const c=item.identified;
+        const language=item.identified.scannerLanguageName==="Japanese"?"Japanese":item.identified.scannerLanguageName==="Chinese Traditional"?"Chinese":item.identified.scannerLanguageName||"English";
+        let cardQuery=supabase.from("cards").select("id").eq("card_number",String(c.localId||"")).eq("language",language).eq("variant","Normal");
+        if(c.set?.id)cardQuery=cardQuery.eq("set_id",c.set.id);
+        const {data:cardRows,error:cardError}=await cardQuery.limit(1);
+        if(cardError)throw cardError;
+        const card=cardRows?.[0];
+        if(!card)throw new Error(`Could not find ${c.englishName||c.name||"this card"} in inventory.`);
+        const {data:rows,error:invError}=await supabase.from("inventory").select("id,quantity").eq("card_id",card.id).gt("quantity",0).order("created_at",{ascending:true}).limit(1);
+        if(invError)throw invError;
+        if(!rows?.[0])throw new Error(`No stock remaining for ${c.englishName||c.name||"this card"}.`);
+        const next=Math.max(0,Number(rows[0].quantity||0)-1);
+        const {error:updateError}=await supabase.from("inventory").update({quantity:next}).eq("id",rows[0].id);
+        if(updateError)throw updateError;
+        updateQueueItem(item.id,{status:"accepted",saleCompletedAt:new Date().toISOString(),error:""});
+      }
+    }catch(e){setError(e?.message||"Could not complete the sale batch. Any cards already processed remain completed.")}
+    finally{setBusy(false)}
   }
 
   function rejectQueueItem(itemId){
@@ -1415,6 +1486,7 @@ function CardScanner({locations=[]}){
   const reviewCount=reviewQueue.filter(x=>x.status==="review").length;
   const acceptedCount=reviewQueue.filter(x=>x.status==="accepted").length;
   const rejectedCount=reviewQueue.filter(x=>x.status==="rejected").length;
+  const salePendingCount=reviewQueue.filter(x=>x.mode==="sold"&&x.status==="sale_pending").length;
 
   return <div className="scanner-page">
     <div className="scanner-topbar">
@@ -1470,6 +1542,7 @@ function CardScanner({locations=[]}){
         </div>
 
         {reviewQueue.length>0&&<button className="scanner-primary" onClick={processQueue} disabled={processingQueue||ocrBusy||!pendingCount} style={{width:"100%",marginBottom:12}}>{processingQueue?"Processing queue…":"🔎 Process pending scans"}</button>}
+        {salePendingCount>0&&<button className="scanner-primary" onClick={completeSaleQueue} disabled={busy} style={{width:"100%",marginBottom:12}}>💷 Complete {salePendingCount} sold card{salePendingCount===1?"":"s"}</button>}
 
         {!reviewQueue.length&&<div className="scanner-empty"><span>📋</span><b>Queue is empty</b><small>Capture cards and they will wait here for review.</small></div>}
 
@@ -1479,7 +1552,7 @@ function CardScanner({locations=[]}){
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
-                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
+                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="sale_pending"?"Sale ready":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
                 {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence?` · ${display.scannerConfidence==="high"?"High confidence":"Good confidence"}`:""}</small></>}
                 {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
                 {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
@@ -1487,6 +1560,19 @@ function CardScanner({locations=[]}){
                 {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
               </div>
             </div>
+
+            {item.status!=="accepted"&&item.status!=="rejected"&&<button type="button" className="ghost" onClick={()=>openManualSearch(item)} style={{width:"100%",marginTop:8}}>✏️ Find card manually</button>}
+            {manualItemId===item.id&&<div style={{marginTop:8,padding:9,borderRadius:10,border:"1px solid #4a3a3a",background:"#0f0c0c"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+                <label style={{margin:0}}>Language<select value={manualLanguage} onChange={e=>setManualLanguage(e.target.value)}><option value="en">English</option><option value="ja">Japanese</option><option value="de">German</option><option value="fr">French</option><option value="es">Spanish</option><option value="it">Italian</option><option value="pt">Portuguese</option><option value="ru">Russian</option><option value="zh-tw">Chinese Traditional</option></select></label>
+                <label style={{margin:0}}>Card / number<input value={manualQuery} onChange={e=>setManualQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchManualCards()}} placeholder="Tauros or 083/106"/></label>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginTop:7}}>
+                <button type="button" onClick={searchManualCards} disabled={manualBusy}>{manualBusy?"Searching…":"🔎 Search TCGdex"}</button>
+                <button type="button" className="ghost" onClick={closeManualSearch}>Close</button>
+              </div>
+              {manualResults.length>0&&<div style={{marginTop:8}}><small>Choose the correct printing:</small>{manualResults.map(c=><button type="button" className="scanner-candidate" key={`manual-${c.scannerLanguage}-${c.id}`} onClick={()=>{chooseCandidate(c,item.id);closeManualSearch()}}>{c.image?<img src={c.image} alt=""/>:null}<span><b>{c.englishName&&c.englishName!==c.name?c.englishName:c.name} · #{c.localId}</b><small>{c.name} · {c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span></button>)}</div>}
+            </div>}
 
             {item.candidates?.length>0&&<div style={{marginTop:8}}>
               <small>Choose the matching printing:</small>
@@ -1500,6 +1586,7 @@ function CardScanner({locations=[]}){
               <button onClick={()=>acceptQueueItem(item)} disabled={busy||!item.identified}>✅ Accept</button>
               <button className="ghost" onClick={()=>rejectQueueItem(item.id)}>❌ Reject</button>
             </div>}
+            {item.status==="sale_pending"&&<button className="ghost" onClick={()=>rejectQueueItem(item.id)} style={{width:"100%",marginTop:8}}>❌ Remove from sale</button>}
           </div>
         })}
 
