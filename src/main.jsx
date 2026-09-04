@@ -1120,7 +1120,13 @@ function CardScanner({locations=[]}){
       const numberCandidates=scannerExtractNumberCandidates(combined);
       const numberInfo=numberCandidates[0]||null;
       const rawNumber=numberInfo?.display||"";
-      const englishNames=scannerNameCandidates(`${topText}\n${cardNameText}`).filter(x=>scannerScript(x)==="latin");
+      const englishNameText=`${topText}\n${cardNameText}`;
+      const englishNames=scannerNameCandidates(englishNameText).filter(x=>scannerScript(x)==="latin");
+      const hasStrongLatinName=englishNames.some(x=>{
+        const n=scannerNormalizeText(x);
+        return n.length>=3 && /[a-z]/i.test(n) &&
+          !/^(basic|stage|pokemon|hp|ability|attack|weakness|resistance|retreat)$/i.test(n);
+      });
 
       async function searchLanguage(lang,names){
         const found=new Map();
@@ -1190,9 +1196,12 @@ function CardScanner({locations=[]}){
           const ranked=numberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
-          const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
-          if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
-            const result={...best,englishName:best.name||""};
+          const exactName=!!best?.scannerExactLocalizedName;
+          const exactNumber=!!best?.scannerNumberConfirmed;
+          const exactDenominator=!!best?.scannerDenominatorConfirmed;
+          const clearWinner=!second||best.scannerScore-second.scannerScore>=120;
+          if(best&&exactName&&exactNumber&&clearWinner){
+            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good"};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1213,6 +1222,21 @@ function CardScanner({locations=[]}){
       }
       setOcrProgress(70);
 
+      if(hasStrongLatinName){
+        if(hits.length){
+          const fallback=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12);
+          setCandidates(fallback);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:fallback,error:""});
+          return null;
+        }
+        // A strong Latin OCR result with no TCGdex hit is still safer than
+        // inventing a Japanese card from the artwork. Stop here and require a
+        // retake/manual correction instead of cross-language hallucination.
+        throw new Error(rawNumber
+          ? `I read "${englishNames[0]}" and #${rawNumber}, but couldn't confirm that card. Please retake or choose it manually.`
+          : `I read "${englishNames[0]}", but couldn't confirm the card. Please retake or choose it manually.`);
+      }
+
       if(workerRef.current===worker){try{await worker.terminate()}catch(_){}worker=null;workerRef.current=null}
       const jaWorker=await Tesseract.createWorker("jpn",1,{logger:m=>{
         if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(70+Math.round(m.progress*15));
@@ -1221,7 +1245,9 @@ function CardScanner({locations=[]}){
       let jaNameText="",jaCardText="";
       try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||""}catch(_){}
       try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||""}catch(_){}
-      const jaNames=scannerJapaneseNameCandidates(`${jaNameText}\n${jaCardText}`);
+      const jaCombinedText=`${jaNameText}\n${jaCardText}`;
+      const jaNames=scannerJapaneseNameCandidates(jaCombinedText);
+      const hasJapaneseScript=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(jaCombinedText);
 
       let jaNumberHits=[];
       if(numberInfo){
@@ -1231,7 +1257,7 @@ function CardScanner({locations=[]}){
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
           const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
-          if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
+          if(hasJapaneseScript&&best&&exactName&&exactNumber&&(!second||best.scannerScore-second.scannerScore>=120)){
             const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
             let englishName=best?.name||"";
             if(dexId){
@@ -1251,7 +1277,7 @@ function CardScanner({locations=[]}){
         }
       }
 
-      const jaHits=jaNames.length?await searchLanguage("ja",jaNames):[];
+      const jaHits=hasJapaneseScript&&jaNames.length?await searchLanguage("ja",jaNames):[];
       if(jaHits.length){
         const ranked=(await enrich(jaHits)).sort((a,b)=>b.scannerScore-a.scannerScore);
         const exact=ranked.filter(x=>jaNames.some(n=>scannerNormalizeText(n)===scannerNormalizeText(x.name)));
@@ -1454,7 +1480,7 @@ function CardScanner({locations=[]}){
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
-                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}</small></>}
+                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence?` · ${display.scannerConfidence==="high"?"High confidence":"Good confidence"}`:""}</small></>}
                 {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
                 {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
                 {item.status==="identifying"&&<small>OCR + TCGdex are working on this card…</small>}
