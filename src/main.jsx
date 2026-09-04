@@ -909,97 +909,125 @@ async function scannerCropDataUrl(dataUrl, region="card"){
 function CardScanner(){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
   const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
-  const [cameraOn,setCameraOn]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
+  const [cameraOn,setCameraOn]=useState(false),[cameraReady,setCameraReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
   const [ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
   const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]);
   const [debugCrops,setDebugCrops]=useState(null);
 
   async function startCamera(){
-    setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);
+    setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);setCameraReady(false);
     const generation=++cameraGenerationRef.current;
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");
+
+      // Clean up any previous stream before opening another one. Keeping two
+      // MediaStreams alive is a common cause of a black mobile preview.
+      if(streamRef.current){
+        streamRef.current.getTracks().forEach(t=>t.stop());
+        streamRef.current=null;
+      }
+
       const stream=await navigator.mediaDevices.getUserMedia({
         video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
         audio:false
       });
+
       if(generation!==cameraGenerationRef.current){
         stream.getTracks().forEach(t=>t.stop());
         return;
       }
-      streamRef.current=stream;
+
       const video=videoRef.current;
-      if(!video)throw new Error("Camera preview element is not ready. Please try again.");
+      if(!video){
+        stream.getTracks().forEach(t=>t.stop());
+        throw new Error("Camera preview element is not ready. Please try again.");
+      }
+
+      streamRef.current=stream;
       video.muted=true;
       video.playsInline=true;
       video.autoplay=true;
-      // Attach the stream first, then let the camera effect start playback
-      // after React has rendered the live video element. This avoids a mobile
-      // Safari/Chrome race where the preview can stay blank.
+      video.setAttribute("playsinline","");
+      video.setAttribute("webkit-playsinline","");
+
+      // Attach and start playback while we're still inside the user's
+      // button-click flow. This avoids the mobile play()/pause() race caused
+      // by a React effect running between attaching the stream and playback.
       video.srcObject=stream;
       setCameraOn(true);
+
+      await new Promise((resolve,reject)=>{
+        let done=false;
+        const finish=()=>{
+          if(done)return;
+          done=true;
+          video.removeEventListener("loadedmetadata",finish);
+          video.removeEventListener("canplay",finish);
+          resolve();
+        };
+        video.addEventListener("loadedmetadata",finish,{once:true});
+        video.addEventListener("canplay",finish,{once:true});
+        if(video.readyState>=1)finish();
+        setTimeout(()=>{if(!done)finish()},2000);
+      });
+
+      if(generation!==cameraGenerationRef.current)return;
+
+      try{
+        const promise=video.play();
+        playPromiseRef.current=promise;
+        await promise;
+      }catch(e){
+        // AbortError is a browser race, not a camera failure. Anything else
+        // is a genuine playback problem and should be shown to the user.
+        if(e?.name!=="AbortError")throw e;
+      }finally{
+        playPromiseRef.current=null;
+      }
+
+      if(generation===cameraGenerationRef.current){
+        if(video.videoWidth&&video.videoHeight)setCameraReady(true);
+        else setError("Camera opened but no video frames are available yet. Try again.");
+      }
     }catch(e){
       if(generation===cameraGenerationRef.current){
         setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
         setCameraOn(false);
+        setCameraReady(false);
+        if(streamRef.current){
+          streamRef.current.getTracks().forEach(t=>t.stop());
+          streamRef.current=null;
+        }
       }
     }finally{
       if(generation===cameraGenerationRef.current)setBusy(false);
     }
   }
 
-  useEffect(()=>{
-    if(!cameraOn)return;
-    const v=videoRef.current,stream=streamRef.current;
-    if(!v||!stream)return;
-    let cancelled=false;
-    const play=async()=>{
-      if(cancelled)return;
-      v.muted=true;
-      v.playsInline=true;
-      v.autoplay=true;
-      if(v.srcObject!==stream)v.srcObject=stream;
-      try{
-        if(v.readyState<1){
-          await new Promise(resolve=>{
-            const done=()=>{v.removeEventListener("loadedmetadata",done);resolve();};
-            v.addEventListener("loadedmetadata",done,{once:true});
-          });
-        }
-        if(cancelled||!v.srcObject)return;
-        const promise=v.play();
-        playPromiseRef.current=promise;
-        await promise;
-      }catch(e){
-        if(e?.name!=="AbortError"&&!cancelled)setError(e?.message||"Could not start camera playback.");
-      }finally{
-        if(playPromiseRef.current)playPromiseRef.current=null;
-      }
-    };
-    play();
-    v.addEventListener("canplay",play);
-    v.addEventListener("loadeddata",play);
-    return()=>{
-      cancelled=true;
-      v.removeEventListener("canplay",play);
-      v.removeEventListener("loadeddata",play);
-      // Never call pause() here; stopping the MediaStream is enough.
-    };
-  },[cameraOn]);
-
   function stopCamera(){
     ++cameraGenerationRef.current;
+    setCameraReady(false);
     if(streamRef.current){
       streamRef.current.getTracks().forEach(t=>t.stop());
       streamRef.current=null;
     }
-    if(videoRef.current)videoRef.current.srcObject=null;
+    const video=videoRef.current;
+    if(video){
+      // Do not call pause() here. If play() is still pending, pause() can
+      // reject it with "The play() request was interrupted by a call to
+      // pause()." Clearing the MediaStream is enough to stop the preview.
+      video.srcObject=null;
+    }
     setCameraOn(false);
   }
 
   async function capture(){
     const v=videoRef.current;
     if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
+    if(!cameraReady||!v.videoWidth||!v.videoHeight){
+      setError("Camera preview is not ready yet. Wait for the live picture, then capture.");
+      return;
+    }
     setError("");setIdentified(null);setCandidates([]);setOcrText("");
     try{
       if(v.paused){
@@ -1180,7 +1208,9 @@ function CardScanner(){
         setCandidates((await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12));
         return;
       }
-      throw new Error(`No confident multilingual TCGdex match${rawNumber?` for #${rawNumber}`:""}. Try Retake with the card larger in frame.`);
+      throw new Error(rawNumber
+        ? `No confident TCGdex match for #${rawNumber}. Keep the whole card inside the frame, especially the bottom collector number.`
+        : "I couldn't read the collector number. Keep the whole card inside the frame, especially the bottom edge, then retake.");
     }catch(e){setError(e?.message||"Could not identify the card.");}
     finally{
       setOcrBusy(false);setOcrProgress(100);
@@ -1221,7 +1251,7 @@ function CardScanner(){
         <div className="scanner-controls">
           {!cameraOn
             ?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>
-            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card"><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
+            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card" disabled={!cameraReady}><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
           }
         </div>
 
@@ -1230,7 +1260,7 @@ function CardScanner(){
           <button className="ghost" onClick={clearCapture} disabled={ocrBusy}>Clear</button>
         </div>}
 
-        <p className="scanner-hint">{cameraOn?"Hold the card flat, keep all four corners visible and avoid glare.":"Camera capture is ready — next we'll identify the card from the captured image."}</p>
+        <p className="scanner-hint">{cameraOn&&!cameraReady?"Starting camera preview…":cameraOn?"Hold the card flat, keep all four corners visible and make sure the bottom collector number is visible.":"Camera capture is ready — next we'll identify the card from the captured image."}</p>
       </div>
 
       <div className="scanner-result">
