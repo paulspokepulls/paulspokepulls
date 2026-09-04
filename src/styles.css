@@ -73,3 +73,183 @@ button:not(.ghost):not(.x):not(.suggestion):not(.editbtn):not(.deletebtn):hover{
 .scanner-ocr-details{margin-top:14px;font-size:11px}.scanner-ocr-details img{width:100%;max-height:180px;object-fit:contain;background:#eee;border-radius:6px}
 @media(max-width:850px){.scanner-content{grid-template-columns:1fr;padding:0 12px 24px}.scanner-result{min-height:180px}.scanner-topbar{padding:12px}.scanner-camera{min-height:240px}}
 @media(max-width:650px){.scanner-title{flex:1}.scanner-back{padding:8px 9px}.scanner-camera{border-radius:12px;min-height:0}.scanner-controls{justify-content:stretch}.scanner-controls button{flex:1}.scanner-capture{min-width:0}.scanner-identify-actions{justify-content:stretch}.scanner-identify-actions button{flex:1}.scanner-identification img{width:100px}.scanner-result{padding:13px}}
+
+
+/* ---------- Admin navigation polish ---------- */
+.tabs{
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  gap:7px;
+  padding:6px;
+  margin:0 0 20px;
+  border:1px solid #e2d9d4;
+  border-radius:14px;
+  background:#eee9e6;
+  box-shadow:0 5px 18px #30211a08;
+}
+.tabs button{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  min-height:42px;
+  padding:9px 10px;
+  background:transparent;
+  color:#655b56;
+  border:1px solid transparent;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:750;
+  white-space:nowrap;
+  transition:background .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease,transform .15s ease;
+}
+.tabs button:hover{
+  background:#f8f5f3;
+  color:#3f3834;
+  border-color:#ddd3ce;
+}
+.tabs button.active{
+  background:#7f1d1d;
+  color:#fff;
+  border-color:#7f1d1d;
+  box-shadow:0 4px 12px #7f1d1d25;
+}
+.tab-icon{
+  display:grid;
+  place-items:center;
+  width:20px;
+  height:20px;
+  border-radius:6px;
+  font-size:13px;
+  line-height:1;
+  opacity:.85;
+}
+.tabs button.active .tab-icon{
+  opacity:1;
+  background:#ffffff1a;
+}
+
+@media(max-width:900px){
+  .tabs{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+}
+
+@media(max-width:650px){
+  .adminmain{
+    padding:14px 12px 24px;
+  }
+
+  .tabs{
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:5px;
+    padding:5px;
+    margin-bottom:14px;
+    border-radius:12px;
+    position:sticky;
+    top:0;
+    z-index:20;
+    background:#eee9e6ee;
+    backdrop-filter:blur(10px);
+  }
+
+  .tabs button{
+    min-height:42px;
+    padding:7px 4px;
+    flex-direction:column;
+    gap:2px;
+    border-radius:9px;
+    font-size:10px;
+    line-height:1.05;
+  }
+
+  .tab-icon{
+    width:19px;
+    height:17px;
+    font-size:12px;
+  }
+
+  /* Keep the scanner itself in its app-like mobile presentation. */
+  .scanner-mode .adminmain{
+    padding:14px 12px 24px;
+    max-width:none;
+  }
+}
+
+/* ---------- Scanner Bought / Sold controls ---------- */
+.scanner-mode-switch{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:0 auto 12px;
+  max-width:1180px;
+}
+.scanner-mode-switch button{
+  min-height:48px;
+  padding:10px 14px;
+  border-radius:12px;
+  border:1px solid #4b4542;
+  background:#262222;
+  color:#eee;
+  font-weight:850;
+}
+.scanner-mode-switch button.selected{
+  background:#7f1d1d;
+  border-color:#b63a3a;
+  box-shadow:0 4px 14px #7f1d1d33;
+}
+.scanner-mode-fields{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:0 auto 12px;
+  max-width:1180px;
+}
+.scanner-mode-fields label{margin:0}
+.scanner-mode-fields input,
+.scanner-mode-fields select{
+  background:#262222;
+  color:#fff;
+  border-color:#49413e;
+}
+.scanner-sold-field{grid-template-columns:1fr}
+.scanner-sold-field small{display:block;margin-top:-4px;color:#aaa}
+
+@media(max-width:650px){
+  .scanner-mode-switch,.scanner-mode-fields{
+    width:calc(100% - 24px);
+  }
+  .scanner-mode-switch{
+    gap:6px;
+    margin:10px 12px;
+  }
+  .scanner-mode-switch button{
+    min-height:46px;
+    border-radius:11px;
+    font-size:15px;
+  }
+  .scanner-mode-fields{
+    gap:7px;
+    margin:0 12px 10px;
+  }
+  .scanner-mode-fields input,
+  .scanner-mode-fields select{
+    min-height:42px;
+    padding:9px 10px;
+    border-radius:10px;
+  }
+  .scanner-sold-field{grid-template-columns:1fr}
+}
+
+
+/* Scanner uses the normal Admin tabs for navigation; no special back button needed. */
+.scanner-mode .scanner-back{
+  display:none!important;
+}
+
+
+/* ---------- Scanner confidence badges ---------- */
+.scanner-confidence{display:inline-flex;align-items:center;width:max-content;padding:3px 7px;margin-left:5px;border-radius:999px;font-size:10px;font-weight:850;line-height:1.2;vertical-align:middle}
+.scanner-confidence.high{background:#dff4e5;color:#1d6a34}
+.scanner-confidence.good{background:#fff0cf;color:#8a5a00}
+.scanner-confidence.review{background:#ffe2dc;color:#9a3428}
