@@ -152,7 +152,7 @@ function Admin({session,publicSite}){
  if(!session)return <div className="login"><button className="back" onClick={publicSite}>← Public catalogue</button><div className="loginbox"><strong className="mark">PP</strong><span className="eyebrow">PRIVATE AREA</span><h1>Admin login</h1><p>Manage your Pokémon TCG business.</p><form onSubmit={login}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{msg&&<div className="alert">{msg}</div>}<button disabled={busy}>{busy?"Signing in…":"Sign in"}</button></form></div></div>;
 
  return <div className={tab==="scanner"?"admin scanner-mode":"admin"}><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","cardmarket","scanner","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":t==="cardmarket"?"Cardmarket":t==="scanner"?"Scanner":"Locations"}</button>)}</nav>
- {tab==="dashboard"&&<><div className="stats"><div className="info"><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div className="info"><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div className="info"><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div className="info"><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
+ {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
  {tab==="scanner"&&<CardScanner locations={locations}/>}
@@ -1134,19 +1134,28 @@ function CardScanner({locations=[]}){
       const rawNumber=numberInfo?.display||"";
       const englishNameText=`${topText}\n${cardNameText}`;
       const englishNames=scannerNameCandidates(englishNameText).filter(x=>scannerScript(x)==="latin");
+      const japaneseScriptDetected=/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(combined);
+      const hanDetected=/\p{Script=Han}/u.test(combined);
+      const hasJapaneseLikeText=japaneseScriptDetected||(/[\p{Script=Han}]/u.test(topText+"\n"+cardNameText));
       const hasStrongLatinName=englishNames.some(x=>{
         const n=scannerNormalizeText(x);
         return n.length>=3 && /[a-z]/i.test(n) &&
           !/^(basic|stage|pokemon|hp|ability|attack|weakness|resistance|retreat)$/i.test(n);
       });
 
+      // Language is decided from the OCR script before we allow any candidate
+      // to win. This is important: Japanese OCR can contain a little Latin
+      // noise (HP, numbers, etc.), and English OCR can occasionally produce
+      // convincing-looking nonsense. Never let the English matcher override a
+      // card that visibly contains Japanese text.
+      const preferredLanguages=hasJapaneseLikeText?["ja"]:["en"];
+
       async function searchLanguage(lang,names){
         const found=new Map();
         for(const candidate of names.slice(0,8)){
-          const queries=[],nums=numberCandidates.slice(0,4);
+          const queries=[],nums=numberCandidates.slice(0,5);
           if(nums.length)for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
           queries.push({name:`eq:${candidate}`,_numberConfidence:0});
-          queries.push({name:candidate,_numberConfidence:0});
           for(const q of queries){
             try{
               const params=new URLSearchParams();
@@ -1158,11 +1167,11 @@ function CardScanner({locations=[]}){
               const cn=scannerNormalizeText(candidate);
               for(const x of list){
                 const xn=scannerNormalizeText(x.name);let score=0;
-                if(xn===cn)score+=500;else if(xn.includes(cn)||cn.includes(xn))score+=180;else continue;
-                if(q.localId&&scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId))score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
+                if(xn===cn)score+=700;else if(xn.includes(cn)||cn.includes(xn))score+=120;else continue;
+                if(q.localId&&scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId))score+=Math.min(500,Number(q._numberConfidence||0)*5);
                 found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate,scannerNumberConfidence:Number(q._numberConfidence||0)});
               }
-            }catch(_){}
+            }catch(_){ }
           }
         }
         return [...found.values()];
@@ -1175,7 +1184,7 @@ function CardScanner({locations=[]}){
           try{
             const dr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(x.scannerLanguage)}/cards/${encodeURIComponent(x.id)}`);
             if(dr.ok)detail={...x,...await dr.json()};
-          }catch(_){}
+          }catch(_){ }
           let englishName=detail.name||x.name||"";
           const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
           if(x.scannerLanguage!=="en"&&dexId){
@@ -1185,136 +1194,121 @@ function CardScanner({locations=[]}){
                 const species=await pr.json();
                 englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
               }
-            }catch(_){}
+            }catch(_){ }
           }
           let score=Number(x.scannerScore||0);
           const setTotal=Number(detail?.set?.cardCount?.total),setOfficial=Number(detail?.set?.cardCount?.official);
           if(numberCandidates.length){
             const matchingNumber=numberCandidates.find(n=>scannerLocalIdKey(n.localId)===scannerLocalIdKey(detail.localId));
             if(matchingNumber){
-              score+=matchingNumber.confidence*2.5;
-              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total))score+=350;
-              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total))score+=300;
-            }else if(x.scannerLanguage==="en")score-=80;
+              score+=matchingNumber.confidence*3;
+              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total))score+=500;
+              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total))score+=450;
+            }else score-=200;
           }
           return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerDenominatorConfirmed:numberCandidates.some(n=>(Number.isFinite(setTotal)&&setTotal===Number(n.total))||(Number.isFinite(setOfficial)&&setOfficial===Number(n.total)))};
         }));
       }
 
+      // First pass: use the detected language's collector number as the hard
+      // anchor. We try several OCR number candidates because mobile Tesseract
+      // can produce one bad reading before the correct 118/142-style reading.
       let numberHits=[];
-      if(numberInfo){
-        numberHits=await scannerFindByNumber("en",numberInfo,englishNames);
-        if(numberHits.length){
-          const ranked=numberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
-          setCandidates(ranked.slice(0,12));
-          const best=ranked[0],second=ranked[1];
-          const exactName=!!best?.scannerExactLocalizedName;
-          const exactNumber=!!best?.scannerNumberConfirmed;
-          const exactDenominator=!!best?.scannerDenominatorConfirmed;
-          const clearWinner=!second||best.scannerScore-second.scannerScore>=120;
-          if(best&&exactName&&exactNumber&&clearWinner){
-            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good"};
-            setIdentified(result);
-            if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
-            return result;
-          }
-        }
+      const namesForNumber=hasJapaneseLikeText?scannerJapaneseNameCandidates(combined):englishNames;
+      for(const ni of numberCandidates.slice(0,5)){
+        const hits=await scannerFindByNumber(preferredLanguages[0],ni,namesForNumber);
+        numberHits.push(...hits);
       }
+      const dedup=new Map();
+      for(const hit of numberHits){
+        const key=`${hit.scannerLanguage}:${hit.id}`;
+        const prev=dedup.get(key);
+        if(!prev||Number(hit.scannerScore)>Number(prev.scannerScore))dedup.set(key,hit);
+      }
+      numberHits=[...dedup.values()].sort((a,b)=>b.scannerScore-a.scannerScore);
 
-      let hits=englishNames.length?await searchLanguage("en",englishNames):[];
-      if(hits.length){
-        const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
+      if(numberHits.length){
+        const ranked=numberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
         setCandidates(ranked.slice(0,12));
         const best=ranked[0],second=ranked[1];
-        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          const result={...best,scannerConfidence:"good"};
+        const exactName=!!best?.scannerExactLocalizedName;
+        const exactNumber=!!best?.scannerNumberConfirmed;
+        const exactDenominator=!!best?.scannerDenominatorConfirmed;
+        const clearWinner=!second||best.scannerScore-second.scannerScore>=100;
+
+        // Automatic identification requires the two things we can trust:
+        // exact localized Pokémon name + exact collector number. The set
+        // denominator is a bonus, not a requirement, because some TCGdex set
+        // counts include secret cards while printed denominators do not.
+        if(best&&exactName&&exactNumber&&clearWinner){
+          const result={...best,englishName:best.englishName||best.name||"",scannerConfidence:exactDenominator?"high":"good"};
           setIdentified(result);
           if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
           return result;
         }
       }
-      setOcrProgress(70);
 
+      setOcrProgress(75);
+
+      // If the card contains Japanese text, do not run the English fallback at
+      // all. The previous implementation could take noisy Latin OCR from a
+      // Japanese card and turn it into unrelated English candidates.
+      if(hasJapaneseLikeText){
+        if(workerRef.current===worker){try{await worker.terminate()}catch(_){}worker=null;workerRef.current=null}
+        const jaWorker=await Tesseract.createWorker("jpn",1,{logger:m=>{
+          if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(75+Math.round(m.progress*15));
+        }});
+        worker=jaWorker;workerRef.current=jaWorker;
+        let jaNameText="",jaCardText="";
+        try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||""}catch(_){ }
+        try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||""}catch(_){ }
+        const jaCombinedText=`${jaNameText}\n${jaCardText}`;
+        const jaNames=scannerJapaneseNameCandidates(jaCombinedText);
+
+        let jaHits=[];
+        for(const ni of numberCandidates.slice(0,5))jaHits.push(...await scannerFindByNumber("ja",ni,jaNames));
+        if(jaNames.length)jaHits.push(...await searchLanguage("ja",jaNames));
+        const jm=new Map();
+        for(const hit of jaHits){
+          const key=`ja:${hit.id}`;
+          const prev=jm.get(key);
+          if(!prev||Number(hit.scannerScore)>Number(prev.scannerScore))jm.set(key,hit);
+        }
+        const ranked=(await enrich([...jm.values()])).sort((a,b)=>b.scannerScore-a.scannerScore);
+        const exact=ranked.filter(x=>jaNames.some(n=>scannerNormalizeText(n)===scannerNormalizeText(x.name)));
+        const pool=exact.length?exact:ranked;
+        setCandidates(pool.slice(0,12));
+        const best=pool[0],second=pool[1];
+        if(best&&best.scannerExactLocalizedName&&best.scannerNumberConfirmed&&(!second||best.scannerScore-second.scannerScore>=100)){
+          const result={...best,scannerConfidence:best.scannerDenominatorConfirmed?"high":"good"};
+          setIdentified(result);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
+          return result;
+        }
+        throw new Error(rawNumber
+          ? `No confident Japanese TCGdex match for #${rawNumber}. Try retaking with the Japanese card larger in frame.`
+          : "I couldn't read the Japanese card number. Keep the whole bottom edge visible and retake.");
+      }
+
+      // English fallback: only offer English candidates when the OCR actually
+      // found a strong Latin name. Never manufacture a match from a number alone.
       if(hasStrongLatinName){
+        const hits=await searchLanguage("en",englishNames);
         if(hits.length){
-          const fallback=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12);
-          setCandidates(fallback);
-          if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:fallback,error:""});
+          const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
+          setCandidates(ranked.slice(0,12));
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:ranked.slice(0,12),error:""});
           return null;
         }
-        // A strong Latin OCR result with no TCGdex hit is still safer than
-        // inventing a Japanese card from the artwork. Stop here and require a
-        // retake/manual correction instead of cross-language hallucination.
         throw new Error(rawNumber
           ? `I read "${englishNames[0]}" and #${rawNumber}, but couldn't confirm that card. Please retake or choose it manually.`
           : `I read "${englishNames[0]}", but couldn't confirm the card. Please retake or choose it manually.`);
       }
 
-      if(workerRef.current===worker){try{await worker.terminate()}catch(_){}worker=null;workerRef.current=null}
-      const jaWorker=await Tesseract.createWorker("jpn",1,{logger:m=>{
-        if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(70+Math.round(m.progress*15));
-      }});
-      worker=jaWorker;workerRef.current=jaWorker;
-      let jaNameText="",jaCardText="";
-      try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||""}catch(_){}
-      try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||""}catch(_){}
-      const jaCombinedText=`${jaNameText}\n${jaCardText}`;
-      const jaNames=scannerJapaneseNameCandidates(jaCombinedText);
-      const hasJapaneseScript=/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(jaCombinedText);
-
-      let jaNumberHits=[];
-      if(numberInfo){
-        jaNumberHits=await scannerFindByNumber("ja",numberInfo,jaNames);
-        if(jaNumberHits.length){
-          const ranked=jaNumberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
-          setCandidates(ranked.slice(0,12));
-          const best=ranked[0],second=ranked[1];
-          const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
-          if(hasJapaneseScript&&best&&exactName&&exactNumber&&(!second||best.scannerScore-second.scannerScore>=120)){
-            const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
-            let englishName=best?.name||"";
-            if(dexId){
-              try{
-                const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-                if(pr.ok){
-                  const species=await pr.json();
-                  englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
-                }
-              }catch(_){}
-            }
-            const result={...best,englishName,scannerConfidence:exactDenominator?"high":"good"};
-            setIdentified(result);
-            if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
-            return result;
-          }
-        }
-      }
-
-      const jaHits=hasJapaneseScript&&jaNames.length?await searchLanguage("ja",jaNames):[];
-      if(jaHits.length){
-        const ranked=(await enrich(jaHits)).sort((a,b)=>b.scannerScore-a.scannerScore);
-        const exact=ranked.filter(x=>jaNames.some(n=>scannerNormalizeText(n)===scannerNormalizeText(x.name)));
-        const pool=exact.length?exact:ranked;
-        setCandidates(pool.slice(0,12));
-        const best=pool[0],second=pool[1];
-        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          const result={...best,scannerConfidence:"good"};
-          setIdentified(result);
-          if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
-          return result;
-        }
-      }
-
-      if(hits.length){
-        const fallback=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12);
-        setCandidates(fallback);
-        if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:fallback,error:""});
-        return null;
-      }
-
       throw new Error(rawNumber
-        ? `No confident TCGdex match for #${rawNumber}. Keep the whole card inside the frame, especially the bottom collector number.`
-        : "I couldn't read the collector number. Keep the whole card inside the frame, especially the bottom edge, then retake.");
+          ? `I read "${englishNames[0]}" and #${rawNumber}, but couldn't confirm that card. Please retake or choose it manually.`
+          : `I read "${englishNames[0]}", but couldn't confirm the card. Please retake or choose it manually.`);
+
     }catch(e){
       const message=e?.message||"Could not identify the card.";
       setError(message);
