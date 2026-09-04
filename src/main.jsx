@@ -1166,8 +1166,28 @@ function CardScanner(){
         }));
       }
 
-      // ENGLISH-FIRST. This restores the old successful path and only falls
-      // through to other languages if English cannot confidently identify it.
+      // NUMBER-FIRST. The collector number is far more reliable than a
+      // whole-database name search when OCR has picked up text from the card
+      // artwork/background. Resolve the exact localId first, then use the OCR
+      // name + denominator to choose between the printings that share it.
+      let numberHits=[];
+      if(numberInfo){
+        numberHits=await scannerFindByNumber("en",numberInfo,englishNames);
+        if(numberHits.length){
+          const ranked=numberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
+          setCandidates(ranked.slice(0,12));
+          const best=ranked[0],second=ranked[1];
+          const exactName=!!best?.scannerExactLocalizedName;
+          const exactNumber=!!best?.scannerNumberConfirmed;
+          const exactDenominator=!!best?.scannerDenominatorConfirmed;
+          if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
+            setIdentified({...best,englishName:best.name||""});return;
+          }
+        }
+      }
+
+      // Name search remains as a fallback for cards where the collector number
+      // could not be read at all (or where the number endpoint misses).
       let hits=englishNames.length?await searchLanguage("en",englishNames):[];
       if(hits.length){
         const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
@@ -1190,6 +1210,35 @@ function CardScanner(){
       try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||"";}catch(_){ }
       try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||"";}catch(_){ }
       const jaNames=scannerJapaneseNameCandidates(`${jaNameText}\n${jaCardText}`);
+
+      // Japanese uses the same number-first strategy. This is especially
+      // important for cards such as ヤルキモノ 083/106: Japanese OCR can be
+      // slightly noisy, but the localId + denominator gives us a hard anchor.
+      let jaNumberHits=[];
+      if(numberInfo){
+        jaNumberHits=await scannerFindByNumber("ja",numberInfo,jaNames);
+        if(jaNumberHits.length){
+          const ranked=jaNumberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
+          setCandidates(ranked.slice(0,12));
+          const best=ranked[0],second=ranked[1];
+          const exactName=!!best?.scannerExactLocalizedName;
+          const exactNumber=!!best?.scannerNumberConfirmed;
+          const exactDenominator=!!best?.scannerDenominatorConfirmed;
+          if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
+            const englishName=await (async()=>{
+              const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
+              if(!dexId)return best?.name||"";
+              try{
+                const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
+                if(pr.ok){const species=await pr.json();return (species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||best?.name||"";}
+              }catch(_){ }
+              return best?.name||"";
+            })();
+            setIdentified({...best,englishName});return;
+          }
+        }
+      }
+
       const jaHits=jaNames.length?await searchLanguage("ja",jaNames):[];
       if(jaHits.length){
         const ranked=(await enrich(jaHits)).sort((a,b)=>b.scannerScore-a.scannerScore);
