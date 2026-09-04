@@ -1223,7 +1223,7 @@ function CardScanner({locations=[]}){
           const exactDenominator=!!best?.scannerDenominatorConfirmed;
           const clearWinner=!second||best.scannerScore-second.scannerScore>=120;
           if(best&&exactName&&exactNumber&&clearWinner){
-            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good"};
+            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good",scannerNumberConfirmed:true,scannerDenominatorConfirmed:exactDenominator,scannerNumberMismatch:false};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1240,7 +1240,7 @@ function CardScanner({locations=[]}){
         const exactName=!!best&&scannerNormalizeText(best.localName)===scannerNormalizeText(best.scannerOcrName);
         if(best&&margin&&exactName){
           const scannerConfidence=best.scannerNumberConfirmed&&best.scannerDenominatorConfirmed?"high":best.scannerNumberConfirmed?"good":"review";
-          const result={...best,scannerConfidence};
+          const result={...best,scannerConfidence,scannerNumberConfirmed:!!best.scannerNumberConfirmed,scannerDenominatorConfirmed:!!best.scannerDenominatorConfirmed,scannerNumberMismatch:!!best.scannerNumberMismatch};
           setIdentified(result);
           if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
           return result;
@@ -1295,7 +1295,7 @@ function CardScanner({locations=[]}){
                 }
               }catch(_){}
             }
-            const result={...best,englishName,scannerConfidence:exactNumber&&exactDenominator?"high":exactNumber?"good":"review"};
+            const result={...best,englishName,scannerConfidence:exactNumber&&exactDenominator?"high":exactNumber?"good":"review",scannerNumberConfirmed:!!exactNumber,scannerDenominatorConfirmed:!!exactDenominator,scannerNumberMismatch:!!best?.scannerNumberMismatch};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1394,8 +1394,9 @@ function CardScanner({locations=[]}){
   }
 
   function chooseCandidate(card,itemId=null){
-    setIdentified(card);setCandidates([]);
-    if(itemId)updateQueueItem(itemId,{status:"review",identified:card,candidates:[],error:""});
+    const chosen={...card,scannerConfidence:"review",scannerManual:true,scannerNumberMismatch:false,scannerNumberConfirmed:false,scannerDenominatorConfirmed:false};
+    setIdentified(chosen);setCandidates([]);
+    if(itemId)updateQueueItem(itemId,{status:"review",identified:chosen,candidates:[],error:""});
   }
 
   function clearCapture(){
@@ -1577,7 +1578,7 @@ function CardScanner({locations=[]}){
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="sale_pending"?"Sale ready":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
-                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence?` · ${display.scannerConfidence==="high"?"High confidence":display.scannerConfidence==="good"?"Good confidence":"Needs review"}`:""}</small></>}
+                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence&&<span className={`scanner-confidence ${display.scannerConfidence}`}>{display.scannerConfidence==="high"?"High confidence":display.scannerConfidence==="good"?"Good confidence":"Needs review"}</span>}</small></>}
                 {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
                 {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
                 {item.status==="identifying"&&<small>OCR + TCGdex are working on this card…</small>}
