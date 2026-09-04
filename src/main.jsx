@@ -1152,14 +1152,12 @@ function CardScanner({locations=[]}){
       async function searchLanguage(lang,names){
         const found=new Map();
         for(const candidate of names.slice(0,8)){
-          const queries=[],nums=numberCandidates.slice(0,4);
-          if(nums.length)for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
-          queries.push({name:`eq:${candidate}`,_numberConfidence:0});
-          queries.push({name:candidate,_numberConfidence:0});
-          for(const q of queries){
+          // Search by name first. Collector-number OCR is corroboration only;
+          // it must never filter out an exact name match when OCR misreads it.
+          for(const nameQuery of [`eq:${candidate}`,candidate]){
             try{
               const params=new URLSearchParams();
-              params.set("name",q.name);if(q.localId)params.set("localId",q.localId);
+              params.set("name",nameQuery);
               params.set("pagination:page","1");params.set("pagination:itemsPerPage","100");
               const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards?${params.toString()}`);
               if(!r.ok)continue;
@@ -1167,11 +1165,12 @@ function CardScanner({locations=[]}){
               const cn=scannerNormalizeText(candidate);
               for(const x of list){
                 const xn=scannerNormalizeText(x.name);let score=0;
-                if(xn===cn)score+=500;else if(xn.includes(cn)||cn.includes(xn))score+=180;else continue;
-                if(q.localId&&scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId))score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
-                found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate,scannerNumberConfidence:Number(q._numberConfidence||0)});
+                if(xn===cn)score+=700;
+                else if(xn.includes(cn)||cn.includes(xn))score+=220;
+                else continue;
+                found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate});
               }
-            }catch(_){}
+            }catch(_){ }
           }
         }
         return [...found.values()];
@@ -1198,15 +1197,17 @@ function CardScanner({locations=[]}){
           }
           let score=Number(x.scannerScore||0);
           const setTotal=Number(detail?.set?.cardCount?.total),setOfficial=Number(detail?.set?.cardCount?.official);
+          let numberConfirmed=false,denominatorConfirmed=false,numberMismatch=false;
           if(numberCandidates.length){
             const matchingNumber=numberCandidates.find(n=>scannerLocalIdKey(n.localId)===scannerLocalIdKey(detail.localId));
             if(matchingNumber){
-              score+=matchingNumber.confidence*2.5;
-              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total))score+=350;
-              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total))score+=300;
-            }else if(x.scannerLanguage==="en")score-=80;
+              numberConfirmed=true;
+              score+=Math.min(450,Number(matchingNumber.confidence||0)*3.2);
+              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total)){score+=350;denominatorConfirmed=true}
+              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total)){score+=300;denominatorConfirmed=true}
+            }else numberMismatch=true;
           }
-          return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerDenominatorConfirmed:numberCandidates.some(n=>(Number.isFinite(setTotal)&&setTotal===Number(n.total))||(Number.isFinite(setOfficial)&&setOfficial===Number(n.total)))};
+          return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerNumberConfirmed:numberConfirmed,scannerNumberMismatch:numberMismatch,scannerDenominatorConfirmed:denominatorConfirmed};
         }));
       }
 
@@ -1235,10 +1236,14 @@ function CardScanner({locations=[]}){
         const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
         setCandidates(ranked.slice(0,12));
         const best=ranked[0],second=ranked[1];
-        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          setIdentified(best);
-          if(itemId)updateQueueItem(itemId,{status:"review",identified:best,candidates:[],error:""});
-          return best;
+        const margin=!second||best.scannerScore-second.scannerScore>=120;
+        const exactName=!!best&&scannerNormalizeText(best.localName)===scannerNormalizeText(best.scannerOcrName);
+        if(best&&margin&&exactName){
+          const scannerConfidence=best.scannerNumberConfirmed&&best.scannerDenominatorConfirmed?"high":best.scannerNumberConfirmed?"good":"review";
+          const result={...best,scannerConfidence};
+          setIdentified(result);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
+          return result;
         }
       }
       setOcrProgress(70);
@@ -1278,7 +1283,7 @@ function CardScanner({locations=[]}){
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
           const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
-          if(hasJapaneseScript&&best&&exactName&&exactNumber&&(!second||best.scannerScore-second.scannerScore>=120)){
+          if(hasJapaneseScript&&best&&exactName&&(!second||best.scannerScore-second.scannerScore>=120)){
             const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
             let englishName=best?.name||"";
             if(dexId){
@@ -1290,7 +1295,7 @@ function CardScanner({locations=[]}){
                 }
               }catch(_){}
             }
-            const result={...best,englishName};
+            const result={...best,englishName,scannerConfidence:exactNumber&&exactDenominator?"high":exactNumber?"good":"review"};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1320,7 +1325,7 @@ function CardScanner({locations=[]}){
       }
 
       throw new Error(rawNumber
-        ? `No confident TCGdex match for #${rawNumber}. Keep the whole card inside the frame, especially the bottom collector number.`
+        ? `I read #${rawNumber}, but couldn't confirm the card. The number may be wrong — keep the whole card inside the frame and retake, or choose it manually.`
         : "I couldn't read the collector number. Keep the whole card inside the frame, especially the bottom edge, then retake.");
     }catch(e){
       const message=e?.message||"Could not identify the card.";
@@ -1510,7 +1515,6 @@ function CardScanner({locations=[]}){
 
   return <div className="scanner-page">
     <div className="scanner-topbar">
-      <button type="button" className="ghost scanner-back" onClick={()=>nav("/admin")} aria-label="Back to Admin">← <span className="scanner-back-full">Admin</span><span className="scanner-back-short">Back</span></button>
       <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
       <span className="scanner-step">{reviewQueue.length} queued</span>
     </div>
@@ -1573,11 +1577,12 @@ function CardScanner({locations=[]}){
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="sale_pending"?"Sale ready":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
-                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence?` · ${display.scannerConfidence==="high"?"High confidence":"Good confidence"}`:""}</small></>}
+                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence?` · ${display.scannerConfidence==="high"?"High confidence":display.scannerConfidence==="good"?"Good confidence":"Needs review"}`:""}</small></>}
                 {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
                 {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
                 {item.status==="identifying"&&<small>OCR + TCGdex are working on this card…</small>}
-                {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
+                {display?.scannerNumberMismatch&&<small style={{display:"block",marginTop:4}}>⚠️ Collector number OCR disagreed with the name match — please verify the printing.</small>}
+                 {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
               </div>
             </div>
 
