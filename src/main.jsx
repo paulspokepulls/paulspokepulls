@@ -1510,7 +1510,7 @@ function CardScanner({locations=[]}){
 
   return <div className="scanner-page">
     <div className="scanner-topbar">
-      <button className="ghost scanner-back" onClick={()=>nav("/admin")}>← Admin</button>
+      <button type="button" className="ghost scanner-back" onClick={()=>nav("/admin")} aria-label="Back to Admin">← <span className="scanner-back-full">Admin</span><span className="scanner-back-short">Back</span></button>
       <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
       <span className="scanner-step">{reviewQueue.length} queued</span>
     </div>
