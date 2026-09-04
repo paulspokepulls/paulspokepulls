@@ -151,31 +151,11 @@ function Admin({session,publicSite}){
 
  if(!session)return <div className="login"><button className="back" onClick={publicSite}>← Public catalogue</button><div className="loginbox"><strong className="mark">PP</strong><span className="eyebrow">PRIVATE AREA</span><h1>Admin login</h1><p>Manage your Pokémon TCG business.</p><form onSubmit={login}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{msg&&<div className="alert">{msg}</div>}<button disabled={busy}>{busy?"Signing in…":"Sign in"}</button></form></div></div>;
 
- return <div className={tab==="scanner"?"admin scanner-mode":"admin"}><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs" aria-label="Admin sections">
-  {[
-    ["dashboard","▦","Dashboard"],
-    ["inventory","▤","Inventory"],
-    ["batch","⚙","Batch tools"],
-    ["cardmarket","◈","Cardmarket"],
-    ["scanner","▣","Scanner"],
-    ["locations","⌖","Locations"]
-  ].map(([key,icon,label])=>
-    <button
-      type="button"
-      className={tab===key?"active":""}
-      onClick={()=>setTab(key)}
-      key={key}
-      aria-current={tab===key?"page":undefined}
-    >
-      <span className="tab-icon" aria-hidden="true">{icon}</span>
-      <span>{label}</span>
-    </button>
-  )}
-</nav>
+ return <div className={tab==="scanner"?"admin scanner-mode":"admin"}><header><div className="brand"><strong>PP</strong><div><b>Paul's Poke Pulls</b><small>Business Manager</small></div></div><div className="actions"><button className="ghost" onClick={publicSite}>Public site</button><button className="ghost" onClick={()=>supabase.auth.signOut()}>Sign out</button></div></header><main className="adminmain"><div className="admintitle"><div><span className="eyebrow">PRIVATE DASHBOARD</span><h1>Business command centre.</h1></div><button onClick={load}>Refresh</button></div>{msg&&<div className="alert">{msg}</div>}<nav className="tabs">{["dashboard","inventory","batch","cardmarket","scanner","locations"].map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t==="dashboard"?"Dashboard":t==="inventory"?"Inventory":t==="batch"?"Batch tools":t==="cardmarket"?"Cardmarket":t==="scanner"?"Scanner":"Locations"}</button>)}</nav>
  {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
- {tab==="scanner"&&<CardScanner locations={locations}/>} 
+ {tab==="scanner"&&<CardScanner locations={locations}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={sets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
@@ -926,6 +906,17 @@ async function scannerCropDataUrl(dataUrl, region="card"){
   });
 }
 
+function scannerConfidenceMeta(item){
+  const confidence=item?.identified?.scannerConfidence;
+  if(item?.status==="accepted")return {key:"accepted",icon:"✅",label:"Accepted"};
+  if(item?.status==="rejected")return {key:"rejected",icon:"❌",label:"Rejected"};
+  if(item?.status==="captured")return {key:"pending",icon:"📸",label:"Pending"};
+  if(item?.status==="identifying")return {key:"working",icon:"🔎",label:"Identifying…"};
+  if(confidence==="high"||confidence==="manual")return {key:"high",icon:"🟢",label:confidence==="manual"?"Confirmed manually":"High confidence"};
+  if(confidence==="good"||confidence==="medium")return {key:"medium",icon:"🟡",label:"Needs review"};
+  return {key:"low",icon:"🔴",label:"Unidentified"};
+}
+
 function CardScanner({locations=[]}){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
   const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
@@ -1152,12 +1143,14 @@ function CardScanner({locations=[]}){
       async function searchLanguage(lang,names){
         const found=new Map();
         for(const candidate of names.slice(0,8)){
-          // Search by name first. Collector-number OCR is corroboration only;
-          // it must never filter out an exact name match when OCR misreads it.
-          for(const nameQuery of [`eq:${candidate}`,candidate]){
+          const queries=[],nums=numberCandidates.slice(0,4);
+          if(nums.length)for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
+          queries.push({name:`eq:${candidate}`,_numberConfidence:0});
+          queries.push({name:candidate,_numberConfidence:0});
+          for(const q of queries){
             try{
               const params=new URLSearchParams();
-              params.set("name",nameQuery);
+              params.set("name",q.name);if(q.localId)params.set("localId",q.localId);
               params.set("pagination:page","1");params.set("pagination:itemsPerPage","100");
               const r=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(lang)}/cards?${params.toString()}`);
               if(!r.ok)continue;
@@ -1165,12 +1158,11 @@ function CardScanner({locations=[]}){
               const cn=scannerNormalizeText(candidate);
               for(const x of list){
                 const xn=scannerNormalizeText(x.name);let score=0;
-                if(xn===cn)score+=700;
-                else if(xn.includes(cn)||cn.includes(xn))score+=220;
-                else continue;
-                found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate});
+                if(xn===cn)score+=500;else if(xn.includes(cn)||cn.includes(xn))score+=180;else continue;
+                if(q.localId&&scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId))score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
+                found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate,scannerNumberConfidence:Number(q._numberConfidence||0)});
               }
-            }catch(_){ }
+            }catch(_){}
           }
         }
         return [...found.values()];
@@ -1197,17 +1189,15 @@ function CardScanner({locations=[]}){
           }
           let score=Number(x.scannerScore||0);
           const setTotal=Number(detail?.set?.cardCount?.total),setOfficial=Number(detail?.set?.cardCount?.official);
-          let numberConfirmed=false,denominatorConfirmed=false,numberMismatch=false;
           if(numberCandidates.length){
             const matchingNumber=numberCandidates.find(n=>scannerLocalIdKey(n.localId)===scannerLocalIdKey(detail.localId));
             if(matchingNumber){
-              numberConfirmed=true;
-              score+=Math.min(450,Number(matchingNumber.confidence||0)*3.2);
-              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total)){score+=350;denominatorConfirmed=true}
-              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total)){score+=300;denominatorConfirmed=true}
-            }else numberMismatch=true;
+              score+=matchingNumber.confidence*2.5;
+              if(Number.isFinite(setTotal)&&setTotal===Number(matchingNumber.total))score+=350;
+              else if(Number.isFinite(setOfficial)&&setOfficial===Number(matchingNumber.total))score+=300;
+            }else if(x.scannerLanguage==="en")score-=80;
           }
-          return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerNumberConfirmed:numberConfirmed,scannerNumberMismatch:numberMismatch,scannerDenominatorConfirmed:denominatorConfirmed};
+          return {...detail,englishName,localName:detail.name||x.name,scannerLanguage:x.scannerLanguage,scannerLanguageName:languageNames[x.scannerLanguage]||x.scannerLanguage,scannerScore:score,scannerDenominatorConfirmed:numberCandidates.some(n=>(Number.isFinite(setTotal)&&setTotal===Number(n.total))||(Number.isFinite(setOfficial)&&setOfficial===Number(n.total)))};
         }));
       }
 
@@ -1223,7 +1213,7 @@ function CardScanner({locations=[]}){
           const exactDenominator=!!best?.scannerDenominatorConfirmed;
           const clearWinner=!second||best.scannerScore-second.scannerScore>=120;
           if(best&&exactName&&exactNumber&&clearWinner){
-            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good",scannerNumberConfirmed:true,scannerDenominatorConfirmed:exactDenominator,scannerNumberMismatch:false};
+            const result={...best,englishName:best.name||"",scannerConfidence:exactDenominator?"high":"good"};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1236,11 +1226,8 @@ function CardScanner({locations=[]}){
         const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
         setCandidates(ranked.slice(0,12));
         const best=ranked[0],second=ranked[1];
-        const margin=!second||best.scannerScore-second.scannerScore>=120;
-        const exactName=!!best&&scannerNormalizeText(best.localName)===scannerNormalizeText(best.scannerOcrName);
-        if(best&&margin&&exactName){
-          const scannerConfidence=best.scannerNumberConfirmed&&best.scannerDenominatorConfirmed?"high":best.scannerNumberConfirmed?"good":"review";
-          const result={...best,scannerConfidence,scannerNumberConfirmed:!!best.scannerNumberConfirmed,scannerDenominatorConfirmed:!!best.scannerDenominatorConfirmed,scannerNumberMismatch:!!best.scannerNumberMismatch};
+        if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
+          const result={...best,scannerConfidence:"good"};
           setIdentified(result);
           if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
           return result;
@@ -1283,7 +1270,7 @@ function CardScanner({locations=[]}){
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
           const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
-          if(hasJapaneseScript&&best&&exactName&&(!second||best.scannerScore-second.scannerScore>=120)){
+          if(hasJapaneseScript&&best&&exactName&&exactNumber&&(!second||best.scannerScore-second.scannerScore>=120)){
             const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
             let englishName=best?.name||"";
             if(dexId){
@@ -1295,7 +1282,7 @@ function CardScanner({locations=[]}){
                 }
               }catch(_){}
             }
-            const result={...best,englishName,scannerConfidence:exactNumber&&exactDenominator?"high":exactNumber?"good":"review",scannerNumberConfirmed:!!exactNumber,scannerDenominatorConfirmed:!!exactDenominator,scannerNumberMismatch:!!best?.scannerNumberMismatch};
+            const result={...best,englishName,scannerConfidence:exactDenominator?"high":"good"};
             setIdentified(result);
             if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
             return result;
@@ -1311,9 +1298,10 @@ function CardScanner({locations=[]}){
         setCandidates(pool.slice(0,12));
         const best=pool[0],second=pool[1];
         if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          setIdentified(best);
-          if(itemId)updateQueueItem(itemId,{status:"review",identified:best,candidates:[],error:""});
-          return best;
+          const result={...best,scannerConfidence:"good"};
+          setIdentified(result);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
+          return result;
         }
       }
 
@@ -1325,7 +1313,7 @@ function CardScanner({locations=[]}){
       }
 
       throw new Error(rawNumber
-        ? `I read #${rawNumber}, but couldn't confirm the card. The number may be wrong — keep the whole card inside the frame and retake, or choose it manually.`
+        ? `No confident TCGdex match for #${rawNumber}. Keep the whole card inside the frame, especially the bottom collector number.`
         : "I couldn't read the collector number. Keep the whole card inside the frame, especially the bottom edge, then retake.");
     }catch(e){
       const message=e?.message||"Could not identify the card.";
@@ -1394,9 +1382,9 @@ function CardScanner({locations=[]}){
   }
 
   function chooseCandidate(card,itemId=null){
-    const chosen={...card,scannerConfidence:"review",scannerManual:true,scannerNumberMismatch:false,scannerNumberConfirmed:false,scannerDenominatorConfirmed:false};
-    setIdentified(chosen);setCandidates([]);
-    if(itemId)updateQueueItem(itemId,{status:"review",identified:chosen,candidates:[],error:""});
+    const result={...card,scannerConfidence:"manual"};
+    setIdentified(result);setCandidates([]);
+    if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
   }
 
   function clearCapture(){
@@ -1516,24 +1504,25 @@ function CardScanner({locations=[]}){
 
   return <div className="scanner-page">
     <div className="scanner-topbar">
+      <button className="ghost scanner-back" onClick={()=>nav("/admin")}>← Admin</button>
       <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
       <span className="scanner-step">{reviewQueue.length} queued</span>
     </div>
 
     {error&&<div className="alert scanner-alert">{error}</div>}
 
-    <div className="scanner-mode-switch">
-      <button type="button" className={scanMode==="bought"?"selected":""} onClick={()=>setScanMode("bought")}>📥 <span>Bought</span></button>
-      <button type="button" className={scanMode==="sold"?"selected":""} onClick={()=>setScanMode("sold")}>🛒 <span>Sold</span></button>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <button type="button" onClick={()=>setScanMode("bought")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="bought"?"#b11":"#555",background:scanMode==="bought"?"#6f1010":"#222",color:"#fff"}}>📥 Bought</button>
+      <button type="button" onClick={()=>setScanMode("sold")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="sold"?"#b11":"#555",background:scanMode==="sold"?"#6f1010":"#222",color:"#fff"}}>🛒 Sold</button>
     </div>
 
-    {scanMode==="bought"&&<div className="scanner-mode-fields">
-      <label>Cost / card (£)<input type="number" step="0.0001" min="0" value={buyCost} onChange={e=>setBuyCost(e.target.value)} /></label>
-      <label>Location<select value={buyLocation} onChange={e=>setBuyLocation(e.target.value)}><option value="">No location</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+    {scanMode==="bought"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <label style={{margin:0}}>Cost / card (£)<input type="number" step="0.0001" min="0" value={buyCost} onChange={e=>setBuyCost(e.target.value)} /></label>
+      <label style={{margin:0}}>Location<select value={buyLocation} onChange={e=>setBuyLocation(e.target.value)}><option value="">No location</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
     </div>}
-    {scanMode==="sold"&&<div className="scanner-mode-fields scanner-sold-field">
-      <label>Sale price / card (£)<input type="number" step="0.01" min="0" value={soldPrice} onChange={e=>setSoldPrice(e.target.value)} /></label>
-      <small>This is saved with the scan for the sales/accounting step.</small>
+    {scanMode==="sold"&&<div style={{marginBottom:12}}>
+      <label style={{margin:0}}>Sale price / card (£)<input type="number" step="0.01" min="0" value={soldPrice} onChange={e=>setSoldPrice(e.target.value)} /></label>
+      <small style={{display:"block",marginTop:5,opacity:.75}}>This is saved with the scan for the sales/accounting step.</small>
     </div>}
 
     <div className="scanner-content">
@@ -1573,17 +1562,20 @@ function CardScanner({locations=[]}){
 
         {reviewQueue.slice().reverse().map(item=>{
           const display=item.identified;
-          return <div key={item.id} style={{border:"1px solid #3a3333",borderRadius:14,padding:10,marginBottom:9,background:"#171313"}}>
+          const confidence=scannerConfidenceMeta(item);
+          return <div key={item.id} className="scanner-queue-item" style={{border:"1px solid #3a3333",borderRadius:14,padding:10,marginBottom:9,background:"#171313"}}>
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
-                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="sale_pending"?"Sale ready":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
-                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}{display.scannerConfidence&&<span className={`scanner-confidence ${display.scannerConfidence}`}>{display.scannerConfidence==="high"?"High confidence":display.scannerConfidence==="good"?"Good confidence":"Needs review"}</span>}</small></>}
+                <div className="scanner-queue-topline">
+                  <b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="sale_pending"?"Sale ready":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b>
+                  <span className={`scanner-confidence scanner-confidence-${confidence.key}`}>{confidence.icon} {confidence.label}</span>
+                </div>
+                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}</small></>}
                 {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
                 {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
                 {item.status==="identifying"&&<small>OCR + TCGdex are working on this card…</small>}
-                {display?.scannerNumberMismatch&&<small style={{display:"block",marginTop:4}}>⚠️ Collector number OCR disagreed with the name match — please verify the printing.</small>}
-                 {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
+                {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
               </div>
             </div>
 
