@@ -1045,9 +1045,25 @@ function CardScanner(){
       await new Promise(r=>requestAnimationFrame(r));
       const w=v.videoWidth,h=v.videoHeight;
       if(!w||!h)throw new Error("Camera image is not ready yet. Wait a second and try again.");
-      const c=document.createElement("canvas");c.width=w;c.height=h;
+
+      // The live preview uses object-fit:cover inside a 4:3 viewport. Capturing
+      // the entire native camera frame here makes the saved photo appear to
+      // zoom out and reveal background that was never visible inside the guide.
+      // Recreate exactly the same 4:3 crop used by the preview.
+      const targetAspect=4/3;
+      const sourceAspect=w/h;
+      let sx=0,sy=0,sw=w,sh=h;
+      if(sourceAspect>targetAspect){
+        sw=Math.floor(h*targetAspect);
+        sx=Math.floor((w-sw)/2);
+      }else if(sourceAspect<targetAspect){
+        sh=Math.floor(w/targetAspect);
+        sy=Math.floor((h-sh)/2);
+      }
+      const c=document.createElement("canvas");
+      c.width=sw;c.height=sh;
       const ctx=c.getContext("2d");if(!ctx)throw new Error("Could not create the capture canvas.");
-      ctx.drawImage(v,0,0,w,h);
+      ctx.drawImage(v,sx,sy,sw,sh,0,0,sw,sh);
       const data=c.toDataURL("image/jpeg",.92);
       if(!data||data.length<100)throw new Error("The camera returned an empty image. Try again.");
       setShot(data);
