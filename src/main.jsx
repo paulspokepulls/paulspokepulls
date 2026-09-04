@@ -155,7 +155,7 @@ function Admin({session,publicSite}){
  {tab==="dashboard"&&<><div className="stats"><div><small>Unique inventory</small><b>{inv.length.toLocaleString()}</b></div><div><small>Physical cards</small><b>{inv.reduce((s,r)=>s+Number(r.quantity||0),0).toLocaleString()}</b></div><div><small>Market value</small><b>£{marketValue.toFixed(2)}</b><small style={{display:"block",marginTop:4}}>{pricedCount.toLocaleString()} / {inv.length.toLocaleString()} priced · {priceCardCount.toLocaleString()} physical{eurToGbp?` · €${marketValueEur.toFixed(2)} @ £${eurToGbp.toFixed(4)}/€`:""}</small></div><div><small>ACE grading</small><b>Coming next</b></div></div><div className="panel"><span className="eyebrow">NEXT UP</span><h2>Automation roadmap</h2><p>Set selection, Cardmarket matching and market pricing are now live. Next we'll expand batch import, scanning, sales, ACE grading and accounting.</p></div></>}
  {tab==="inventory"&&<><div className="toolbar"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search your full inventory..."/><button onClick={openAdd}>＋ Add card</button></div><div className="panel"><div className="list">{filtered.slice(0,200).map(r=><div className="row" key={r.id}><div className="rowmain">{r.cards?.set_symbol_url?<img className="setmini" src={r.cards.set_symbol_url} alt=""/>:null}<div><b>{r.cards?.name}</b><small>{r.cards?.set_name} · {r.cards?.card_number}</small></div></div><div className="rowright"><span>{r.cards?.language} · {r.cards?.variant} · ×{r.quantity} · {r.status}</span><button className="editbtn" onClick={()=>openEdit(r)} disabled={busy}>Edit</button><button className="deletebtn" onClick={()=>deleteCard(r)} disabled={busy}>Delete</button></div></div>)}</div></div></>}
  {tab==="batch"&&<BatchTool inventory={inv} onDone={load}/>} {tab==="cardmarket"&&<CardmarketMatcher inventory={inv} onDone={load}/>}
- {tab==="scanner"&&<CardScanner/>}
+ {tab==="scanner"&&<CardScanner locations={locations}/>}
  {tab==="locations"&&<Locations locations={locations} onDone={load}/>}
  </main>{showForm&&<CardModal form={form} setForm={setForm} locations={locations} sets={sets} setSearch={setSetSearchValue} setSearchValue={setSearchValue} editing={editing} busy={busy} msg={msg} close={closeForm} submit={saveCard}/>}</div>
 }
@@ -906,85 +906,98 @@ async function scannerCropDataUrl(dataUrl, region="card"){
   });
 }
 
-function CardScanner(){
+function CardScanner({locations=[]}){
   const videoRef=React.useRef(null),streamRef=React.useRef(null),workerRef=React.useRef(null);
   const playPromiseRef=React.useRef(null),cameraGenerationRef=React.useRef(0);
-  const [cameraOn,setCameraOn]=useState(false),[cameraReady,setCameraReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[shot,setShot]=useState(null);
-  const [ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
-  const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]);
-  const [debugCrops,setDebugCrops]=useState(null);
+
+  const [cameraOn,setCameraOn]=useState(false),[cameraReady,setCameraReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState("");
+  const [shot,setShot]=useState(null),[ocrBusy,setOcrBusy]=useState(false),[ocrProgress,setOcrProgress]=useState(0),[ocrText,setOcrText]=useState("");
+  const [identified,setIdentified]=useState(null),[candidates,setCandidates]=useState([]),[debugCrops,setDebugCrops]=useState(null);
+  const [scanMode,setScanMode]=useState("bought"),[buyCost,setBuyCost]=useState("0.02"),[buyLocation,setBuyLocation]=useState(""),[soldPrice,setSoldPrice]=useState("0");
+  const [reviewQueue,setReviewQueue]=useState(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem("pp_scan_queue")||"[]");
+      return Array.isArray(saved)?saved:[];
+    }catch(_){return []}
+  });
+  const [processingQueue,setProcessingQueue]=useState(false);
+
+  useEffect(()=>{
+    try{
+      const compact=reviewQueue.map(x=>{
+        const copy={...x};
+        if(copy.status==="accepted"||copy.status==="rejected")delete copy.image;
+        return copy;
+      });
+      localStorage.setItem("pp_scan_queue",JSON.stringify(compact));
+    }catch(_){}
+  },[reviewQueue]);
+
+  function updateQueueItem(id,patch){
+    setReviewQueue(q=>q.map(item=>item.id===id?{...item,...patch}:item));
+  }
+
+  function addQueueItem(image){
+    const item={
+      id:`scan-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      image,
+      mode:scanMode,
+      buyCost:scanMode==="bought"?Number(buyCost||0):0,
+      buyLocation:scanMode==="bought"?buyLocation:"",
+      soldPrice:scanMode==="sold"?Number(soldPrice||0):0,
+      status:"captured",
+      identified:null,
+      candidates:[],
+      error:"",
+      createdAt:new Date().toISOString()
+    };
+    setReviewQueue(q=>[...q,item]);
+    return item.id;
+  }
 
   async function startCamera(){
     setError("");setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setBusy(true);setCameraReady(false);
     const generation=++cameraGenerationRef.current;
     try{
       if(!navigator.mediaDevices?.getUserMedia)throw new Error("Camera access is not available in this browser.");
-
-      // Clean up any previous stream before opening another one. Keeping two
-      // MediaStreams alive is a common cause of a black mobile preview.
       if(streamRef.current){
         streamRef.current.getTracks().forEach(t=>t.stop());
         streamRef.current=null;
       }
-
       const stream=await navigator.mediaDevices.getUserMedia({
         video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
         audio:false
       });
-
       if(generation!==cameraGenerationRef.current){
         stream.getTracks().forEach(t=>t.stop());
         return;
       }
-
       const video=videoRef.current;
       if(!video){
         stream.getTracks().forEach(t=>t.stop());
         throw new Error("Camera preview element is not ready. Please try again.");
       }
-
       streamRef.current=stream;
-      video.muted=true;
-      video.playsInline=true;
-      video.autoplay=true;
-      video.setAttribute("playsinline","");
-      video.setAttribute("webkit-playsinline","");
-
-      // Attach and start playback while we're still inside the user's
-      // button-click flow. This avoids the mobile play()/pause() race caused
-      // by a React effect running between attaching the stream and playback.
-      video.srcObject=stream;
-      setCameraOn(true);
-
-      await new Promise((resolve,reject)=>{
+      video.muted=true;video.playsInline=true;video.autoplay=true;
+      video.setAttribute("playsinline","");video.setAttribute("webkit-playsinline","");
+      video.srcObject=stream;setCameraOn(true);
+      await new Promise(resolve=>{
         let done=false;
         const finish=()=>{
-          if(done)return;
-          done=true;
+          if(done)return;done=true;
           video.removeEventListener("loadedmetadata",finish);
-          video.removeEventListener("canplay",finish);
-          resolve();
+          video.removeEventListener("canplay",finish);resolve();
         };
         video.addEventListener("loadedmetadata",finish,{once:true});
         video.addEventListener("canplay",finish,{once:true});
         if(video.readyState>=1)finish();
         setTimeout(()=>{if(!done)finish()},2000);
       });
-
       if(generation!==cameraGenerationRef.current)return;
-
       try{
-        const promise=video.play();
-        playPromiseRef.current=promise;
-        await promise;
-      }catch(e){
-        // AbortError is a browser race, not a camera failure. Anything else
-        // is a genuine playback problem and should be shown to the user.
-        if(e?.name!=="AbortError")throw e;
-      }finally{
-        playPromiseRef.current=null;
-      }
-
+        const promise=video.play();playPromiseRef.current=promise;await promise;
+      }catch(e){if(e?.name!=="AbortError")throw e}
+      finally{playPromiseRef.current=null}
       if(generation===cameraGenerationRef.current){
         if(video.videoWidth&&video.videoHeight)setCameraReady(true);
         else setError("Camera opened but no video frames are available yet. Try again.");
@@ -992,32 +1005,17 @@ function CardScanner(){
     }catch(e){
       if(generation===cameraGenerationRef.current){
         setError(e?.name==="NotAllowedError"?"Camera permission was denied. Allow camera access and try again.":e?.message||"Could not open the camera.");
-        setCameraOn(false);
-        setCameraReady(false);
-        if(streamRef.current){
-          streamRef.current.getTracks().forEach(t=>t.stop());
-          streamRef.current=null;
-        }
+        setCameraOn(false);setCameraReady(false);
+        if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
       }
-    }finally{
-      if(generation===cameraGenerationRef.current)setBusy(false);
-    }
+    }finally{if(generation===cameraGenerationRef.current)setBusy(false)}
   }
 
   function stopCamera(){
-    ++cameraGenerationRef.current;
-    setCameraReady(false);
-    if(streamRef.current){
-      streamRef.current.getTracks().forEach(t=>t.stop());
-      streamRef.current=null;
-    }
+    ++cameraGenerationRef.current;setCameraReady(false);
+    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
     const video=videoRef.current;
-    if(video){
-      // Do not call pause() here. If play() is still pending, pause() can
-      // reject it with "The play() request was interrupted by a call to
-      // pause()." Clearing the MediaStream is enough to stop the preview.
-      video.srcObject=null;
-    }
+    if(video)video.srcObject=null;
     setCameraOn(false);
   }
 
@@ -1025,89 +1023,67 @@ function CardScanner(){
     const v=videoRef.current;
     if(!v){setError("Camera preview is not ready yet. Try again in a second.");return}
     if(!cameraReady||!v.videoWidth||!v.videoHeight){
-      setError("Camera preview is not ready yet. Wait for the live picture, then capture.");
-      return;
+      setError("Camera preview is not ready yet. Wait for the live picture, then capture.");return
     }
-    setError("");setIdentified(null);setCandidates([]);setOcrText("");
+    setError("");setIdentified(null);setCandidates([]);setOcrText("");setDebugCrops(null);
     try{
       if(v.paused){
         let promise=null;
-        try{
-          promise=v.play();
-          playPromiseRef.current=promise;
-          await promise;
-        }catch(e){
-          if(e?.name!=="AbortError")throw e;
-        }finally{
-          if(playPromiseRef.current===promise)playPromiseRef.current=null;
-        }
+        try{promise=v.play();playPromiseRef.current=promise;await promise}
+        catch(e){if(e?.name!=="AbortError")throw e}
+        finally{if(playPromiseRef.current===promise)playPromiseRef.current=null}
       }
       await new Promise(r=>requestAnimationFrame(r));
       const w=v.videoWidth,h=v.videoHeight;
       if(!w||!h)throw new Error("Camera image is not ready yet. Wait a second and try again.");
-
-      // The live preview uses object-fit:cover inside a 4:3 viewport. Capturing
-      // the entire native camera frame here makes the saved photo appear to
-      // zoom out and reveal background that was never visible inside the guide.
-      // Recreate exactly the same 4:3 crop used by the preview.
-      const targetAspect=4/3;
-      const sourceAspect=w/h;
+      const targetAspect=4/3,sourceAspect=w/h;
       let sx=0,sy=0,sw=w,sh=h;
-      if(sourceAspect>targetAspect){
-        sw=Math.floor(h*targetAspect);
-        sx=Math.floor((w-sw)/2);
-      }else if(sourceAspect<targetAspect){
-        sh=Math.floor(w/targetAspect);
-        sy=Math.floor((h-sh)/2);
-      }
-      const c=document.createElement("canvas");
-      c.width=sw;c.height=sh;
+      if(sourceAspect>targetAspect){sw=Math.floor(h*targetAspect);sx=Math.floor((w-sw)/2)}
+      else if(sourceAspect<targetAspect){sh=Math.floor(w/targetAspect);sy=Math.floor((h-sh)/2)}
+      const c=document.createElement("canvas");c.width=sw;c.height=sh;
       const ctx=c.getContext("2d");if(!ctx)throw new Error("Could not create the capture canvas.");
       ctx.drawImage(v,sx,sy,sw,sh,0,0,sw,sh);
-      const data=c.toDataURL("image/jpeg",.92);
+      const data=c.toDataURL("image/jpeg",.88);
       if(!data||data.length<100)throw new Error("The camera returned an empty image. Try again.");
       setShot(data);
+      addQueueItem(data);
     }catch(e){setError(e?.message||"Could not capture the camera image.")}
   }
 
-  async function identifyCard(){
-    if(!shot||ocrBusy)return;
+  async function identifyCard(sourceShot=shot,itemId=null){
+    if(!sourceShot||ocrBusy)return null;
     setError("");setIdentified(null);setCandidates([]);setOcrText("");setDebugCrops(null);setOcrProgress(0);setOcrBusy(true);
+    if(itemId)updateQueueItem(itemId,{status:"identifying",error:""});
     let worker=null;
     try{
       const Tesseract=await loadTesseract();
       const [nameImage,numberImage,cardImage]=await Promise.all([
-        scannerCropDataUrl(shot,"name"),scannerCropDataUrl(shot,"number"),scannerCropDataUrl(shot,"card")
+        scannerCropDataUrl(sourceShot,"name"),scannerCropDataUrl(sourceShot,"number"),scannerCropDataUrl(sourceShot,"card")
       ]);
       setDebugCrops({name:nameImage,number:numberImage,card:cardImage});
 
-      // Keep English OCR separate from Japanese OCR. jpn+eng on every card was
-      // the regression that made previously reliable English scans fail.
       worker=await Tesseract.createWorker("eng",1,{logger:m=>{
         if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(Math.round(m.progress*35));
       }});
       workerRef.current=worker;
-
-      const top=await worker.recognize(nameImage);
-      const topText=top?.data?.text||"";
+      const top=await worker.recognize(nameImage),topText=top?.data?.text||"";
       setOcrProgress(20);
       let cardNameText="";
       try{
         await worker.setParameters({tessedit_pageseg_mode:"11"});
         const cardName=await worker.recognize(cardImage);cardNameText=cardName?.data?.text||"";
-      }catch(_){ }
+      }catch(_){}
       setOcrProgress(35);
-
       let bottomText="",cardNumberText="";
       try{
         await worker.setParameters({tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/-",tessedit_pageseg_mode:"7"});
         const bottom=await worker.recognize(numberImage);bottomText=bottom?.data?.text||"";
-      }catch(_){ }
+      }catch(_){}
       setOcrProgress(50);
       try{
         await worker.setParameters({tessedit_pageseg_mode:"11"});
         const cardNumber=await worker.recognize(cardImage);cardNumberText=cardNumber?.data?.text||"";
-      }catch(_){ }
+      }catch(_){}
 
       const combined=`${topText}\n${cardNameText}\n${bottomText}\n${cardNumberText}`;
       setOcrText(combined);
@@ -1119,13 +1095,8 @@ function CardScanner(){
       async function searchLanguage(lang,names){
         const found=new Map();
         for(const candidate of names.slice(0,8)){
-          const queries=[];
-          // Search each plausible OCR number, not just the first one. A second
-          // OCR pass may read 083 correctly after the first reads 003.
-          const nums=numberCandidates.slice(0,4);
-          if(nums.length){
-            for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
-          }
+          const queries=[],nums=numberCandidates.slice(0,4);
+          if(nums.length)for(const ni of nums)queries.push({name:`eq:${candidate}`,localId:String(ni.localId),_numberConfidence:ni.confidence});
           queries.push({name:`eq:${candidate}`,_numberConfidence:0});
           queries.push({name:candidate,_numberConfidence:0});
           for(const q of queries){
@@ -1140,13 +1111,10 @@ function CardScanner(){
               for(const x of list){
                 const xn=scannerNormalizeText(x.name);let score=0;
                 if(xn===cn)score+=500;else if(xn.includes(cn)||cn.includes(xn))score+=180;else continue;
-                if(q.localId){
-                  const sameLocal=scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId);
-                  if(sameLocal)score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
-                }
+                if(q.localId&&scannerLocalIdKey(x.localId)===scannerLocalIdKey(q.localId))score+=Math.min(450,Number(q._numberConfidence||0)*4.5);
                 found.set(`${lang}:${x.id}`,{...x,scannerScore:score,scannerLanguage:lang,scannerOcrName:candidate,scannerNumberConfidence:Number(q._numberConfidence||0)});
               }
-            }catch(_){ }
+            }catch(_){}
           }
         }
         return [...found.values()];
@@ -1159,14 +1127,17 @@ function CardScanner(){
           try{
             const dr=await fetch(`https://api.tcgdex.net/v2/${encodeURIComponent(x.scannerLanguage)}/cards/${encodeURIComponent(x.id)}`);
             if(dr.ok)detail={...x,...await dr.json()};
-          }catch(_){ }
+          }catch(_){}
           let englishName=detail.name||x.name||"";
           const dexId=Array.isArray(detail.dexId)?detail.dexId[0]:detail.dexId;
           if(x.scannerLanguage!=="en"&&dexId){
             try{
               const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-              if(pr.ok){const species=await pr.json();englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;}
-            }catch(_){ }
+              if(pr.ok){
+                const species=await pr.json();
+                englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
+              }
+            }catch(_){}
           }
           let score=Number(x.scannerScore||0);
           const setTotal=Number(detail?.set?.cardCount?.total),setOfficial=Number(detail?.set?.cardCount?.official);
@@ -1182,10 +1153,6 @@ function CardScanner(){
         }));
       }
 
-      // NUMBER-FIRST. The collector number is far more reliable than a
-      // whole-database name search when OCR has picked up text from the card
-      // artwork/background. Resolve the exact localId first, then use the OCR
-      // name + denominator to choose between the printings that share it.
       let numberHits=[];
       if(numberInfo){
         numberHits=await scannerFindByNumber("en",numberInfo,englishNames);
@@ -1193,43 +1160,39 @@ function CardScanner(){
           const ranked=numberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
-          const exactName=!!best?.scannerExactLocalizedName;
-          const exactNumber=!!best?.scannerNumberConfirmed;
-          const exactDenominator=!!best?.scannerDenominatorConfirmed;
+          const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
           if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
-            setIdentified({...best,englishName:best.name||""});return;
+            const result={...best,englishName:best.name||""};
+            setIdentified(result);
+            if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
+            return result;
           }
         }
       }
 
-      // Name search remains as a fallback for cards where the collector number
-      // could not be read at all (or where the number endpoint misses).
       let hits=englishNames.length?await searchLanguage("en",englishNames):[];
       if(hits.length){
         const ranked=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore);
         setCandidates(ranked.slice(0,12));
         const best=ranked[0],second=ranked[1];
         if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          setIdentified(best);return;
+          setIdentified(best);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:best,candidates:[],error:""});
+          return best;
         }
       }
       setOcrProgress(70);
 
-      // Japanese fallback. This is deliberately separate so English cards never
-      // pay the accuracy penalty of the combined jpn+eng model.
-      if(workerRef.current===worker){try{await worker.terminate()}catch(_){ }worker=null;workerRef.current=null;}
+      if(workerRef.current===worker){try{await worker.terminate()}catch(_){}worker=null;workerRef.current=null}
       const jaWorker=await Tesseract.createWorker("jpn",1,{logger:m=>{
         if(m?.status==="recognizing text"&&typeof m.progress==="number")setOcrProgress(70+Math.round(m.progress*15));
       }});
       worker=jaWorker;workerRef.current=jaWorker;
       let jaNameText="",jaCardText="";
-      try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||"";}catch(_){ }
-      try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||"";}catch(_){ }
+      try{const jr=await jaWorker.recognize(nameImage);jaNameText=jr?.data?.text||""}catch(_){}
+      try{await jaWorker.setParameters({tessedit_pageseg_mode:"11"});const jr=await jaWorker.recognize(cardImage);jaCardText=jr?.data?.text||""}catch(_){}
       const jaNames=scannerJapaneseNameCandidates(`${jaNameText}\n${jaCardText}`);
 
-      // Japanese uses the same number-first strategy. This is especially
-      // important for cards such as ヤルキモノ 083/106: Japanese OCR can be
-      // slightly noisy, but the localId + denominator gives us a hard anchor.
       let jaNumberHits=[];
       if(numberInfo){
         jaNumberHits=await scannerFindByNumber("ja",numberInfo,jaNames);
@@ -1237,20 +1200,23 @@ function CardScanner(){
           const ranked=jaNumberHits.slice().sort((a,b)=>b.scannerScore-a.scannerScore);
           setCandidates(ranked.slice(0,12));
           const best=ranked[0],second=ranked[1];
-          const exactName=!!best?.scannerExactLocalizedName;
-          const exactNumber=!!best?.scannerNumberConfirmed;
-          const exactDenominator=!!best?.scannerDenominatorConfirmed;
+          const exactName=!!best?.scannerExactLocalizedName,exactNumber=!!best?.scannerNumberConfirmed,exactDenominator=!!best?.scannerDenominatorConfirmed;
           if(best&&exactName&&exactNumber&&exactDenominator&&(!second||best.scannerScore-second.scannerScore>=120)){
-            const englishName=await (async()=>{
-              const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
-              if(!dexId)return best?.name||"";
+            const dexId=Array.isArray(best?.dexId)?best.dexId[0]:best?.dexId;
+            let englishName=best?.name||"";
+            if(dexId){
               try{
                 const pr=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(dexId)}`);
-                if(pr.ok){const species=await pr.json();return (species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||best?.name||"";}
-              }catch(_){ }
-              return best?.name||"";
-            })();
-            setIdentified({...best,englishName});return;
+                if(pr.ok){
+                  const species=await pr.json();
+                  englishName=(species.names||[]).find(n=>n.language?.name==="en")?.name||species.name||englishName;
+                }
+              }catch(_){}
+            }
+            const result={...best,englishName};
+            setIdentified(result);
+            if(itemId)updateQueueItem(itemId,{status:"review",identified:result,candidates:[],error:""});
+            return result;
           }
         }
       }
@@ -1258,56 +1224,170 @@ function CardScanner(){
       const jaHits=jaNames.length?await searchLanguage("ja",jaNames):[];
       if(jaHits.length){
         const ranked=(await enrich(jaHits)).sort((a,b)=>b.scannerScore-a.scannerScore);
-        // Exact localized name is mandatory for automatic Japanese selection.
-        // A bad number OCR can only add evidence; it cannot replace the name.
         const exact=ranked.filter(x=>jaNames.some(n=>scannerNormalizeText(n)===scannerNormalizeText(x.name)));
         const pool=exact.length?exact:ranked;
         setCandidates(pool.slice(0,12));
         const best=pool[0],second=pool[1];
         if(best&&(!second||best.scannerScore-second.scannerScore>=120)){
-          setIdentified(best);return;
+          setIdentified(best);
+          if(itemId)updateQueueItem(itemId,{status:"review",identified:best,candidates:[],error:""});
+          return best;
         }
       }
 
       if(hits.length){
-        setCandidates((await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12));
-        return;
+        const fallback=(await enrich(hits)).sort((a,b)=>b.scannerScore-a.scannerScore).slice(0,12);
+        setCandidates(fallback);
+        if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:fallback,error:""});
+        return null;
       }
+
       throw new Error(rawNumber
         ? `No confident TCGdex match for #${rawNumber}. Keep the whole card inside the frame, especially the bottom collector number.`
         : "I couldn't read the collector number. Keep the whole card inside the frame, especially the bottom edge, then retake.");
-    }catch(e){setError(e?.message||"Could not identify the card.");}
-    finally{
+    }catch(e){
+      const message=e?.message||"Could not identify the card.";
+      setError(message);
+      if(itemId)updateQueueItem(itemId,{status:"review",identified:null,candidates:[],error:message});
+      return null;
+    }finally{
       setOcrBusy(false);setOcrProgress(100);
-      if(workerRef.current){try{await workerRef.current.terminate()}catch(_){ }workerRef.current=null}
+      if(workerRef.current){try{await workerRef.current.terminate()}catch(_){}workerRef.current=null}
     }
   }
 
-  function chooseCandidate(card){
-    setIdentified(card);setCandidates([card]);
+  async function processQueue(){
+    if(processingQueue)return;
+    const pending=reviewQueue.filter(x=>x.status==="captured"||x.status==="error");
+    if(!pending.length)return;
+    setProcessingQueue(true);setError("");
+    for(const item of pending){
+      await identifyCard(item.image,item.id);
+    }
+    setProcessingQueue(false);
+  }
+
+  function chooseCandidate(card,itemId=null){
+    setIdentified(card);setCandidates([]);
+    if(itemId)updateQueueItem(itemId,{status:"review",identified:card,candidates:[],error:""});
   }
 
   function clearCapture(){
     setShot(null);setIdentified(null);setCandidates([]);setOcrText("");setDebugCrops(null);setError("");setOcrProgress(0);
   }
 
+  async function acceptQueueItem(item){
+    if(!item?.identified?.id){setError("This scan has no confirmed card. Choose a match or reject it.");return}
+    if(!supabase){setError("Supabase is not connected.");return}
+    const c=item.identified;
+    setBusy(true);setError("");
+    try{
+      const filters={
+        set_id:c.set?.id||null,
+        card_number:String(c.localId||""),
+        language:item.identified.scannerLanguageName==="Japanese"?"Japanese":item.identified.scannerLanguageName==="Chinese Traditional"?"Chinese":item.identified.scannerLanguageName||"English",
+        variant:"Normal"
+      };
+      let card=null;
+      let cardQuery=supabase.from("cards").select("id,name,english_name,set_name,set_code,set_id,card_number,language,variant,rarity,image_url").eq("card_number",filters.card_number).eq("language",filters.language).eq("variant","Normal");
+      if(filters.set_id)cardQuery=cardQuery.eq("set_id",filters.set_id);
+      const {data:cardRows,error:cardError}=await cardQuery.limit(1);
+      if(cardError)throw cardError;
+      card=cardRows?.[0]||null;
+
+      if(item.mode==="bought"){
+        if(card){
+          const {data:rows,error:invError}=await supabase.from("inventory").select("id,quantity,cost_per_card").eq("card_id",card.id).order("created_at",{ascending:true}).limit(1);
+          if(invError)throw invError;
+          if(rows?.[0]){
+            const oldQty=Number(rows[0].quantity||0); const currentCost=Number(rows[0].cost_per_card||0); const incomingCost=Number(item.buyCost||0); const weightedCost=oldQty>0?((oldQty*currentCost)+incomingCost)/(oldQty+1):incomingCost; const {error:updateError}=await supabase.from("inventory").update({quantity:oldQty+1,cost_per_card:weightedCost}).eq("id",rows[0].id);
+            if(updateError)throw updateError;
+          }else{
+            const {error:insertError}=await supabase.from("inventory").insert({
+              card_id:card.id,quantity:1,condition:"NM",cost_per_card:Number(item.buyCost||0),status:"available",location_id:item.buyLocation||null
+            });
+            if(insertError)throw insertError;
+          }
+        }else{
+          const payload={
+            name:c.englishName||c.name||"Unknown",
+            english_name:c.englishName||c.name||"",
+            set_name:c.set?.name||"Unknown set",
+            set_code:c.set?.id||null,
+            set_id:c.set?.id||null,
+            set_symbol_url:c.set?.symbol||null,
+            card_number:c.localId||null,
+            language:filters.language,
+            variant:"Normal",
+            rarity:c.rarity||null,
+            image_url:c.image||null
+          };
+          const {data:newCard,error:newCardError}=await supabase.from("cards").insert(payload).select().single();
+          if(newCardError)throw newCardError;
+          const {error:newInvError}=await supabase.from("inventory").insert({
+            card_id:newCard.id,quantity:1,condition:"NM",cost_per_card:Number(item.buyCost||0),status:"available",location_id:item.buyLocation||null
+          });
+          if(newInvError)throw newInvError;
+        }
+      }else{
+        if(!card)throw new Error("Card is not in your inventory, so this sale cannot be accepted.");
+        const {data:rows,error:invError}=await supabase.from("inventory").select("id,quantity").eq("card_id",card.id).gt("quantity",0).order("created_at",{ascending:true}).limit(1);
+        if(invError)throw invError;
+        if(!rows?.[0])throw new Error("No stock available for this card.");
+        const next=Math.max(0,Number(rows[0].quantity||0)-1);
+        const {error:updateError}=await supabase.from("inventory").update({quantity:next}).eq("id",rows[0].id);
+        if(updateError)throw updateError;
+      }
+      updateQueueItem(item.id,{status:"accepted",processedAt:new Date().toISOString()});
+    }catch(e){
+      setError(e?.message||"Could not apply this queue item.");
+      updateQueueItem(item.id,{status:"review",error:e?.message||"Could not apply this queue item."});
+    }finally{setBusy(false)}
+  }
+
+  function rejectQueueItem(itemId){
+    updateQueueItem(itemId,{status:"rejected",processedAt:new Date().toISOString()});
+  }
+
+  function removeCompleted(){
+    setReviewQueue(q=>q.filter(x=>x.status!=="accepted"&&x.status!=="rejected"));
+  }
+
   useEffect(()=>()=>{if(workerRef.current){workerRef.current.terminate().catch(()=>{});workerRef.current=null}stopCamera()},[]);
+
+  const pendingCount=reviewQueue.filter(x=>x.status==="captured").length;
+  const reviewCount=reviewQueue.filter(x=>x.status==="review").length;
+  const acceptedCount=reviewQueue.filter(x=>x.status==="accepted").length;
+  const rejectedCount=reviewQueue.filter(x=>x.status==="rejected").length;
 
   return <div className="scanner-page">
     <div className="scanner-topbar">
       <button className="ghost scanner-back" onClick={()=>nav("/admin")}>← Admin</button>
       <div className="scanner-title"><span className="eyebrow">CARD SCANNER</span><b>Scan a card</b></div>
-      <span className="scanner-step">{identified?"3 / 3":shot?"2 / 3":"1 / 3"}</span>
+      <span className="scanner-step">{reviewQueue.length} queued</span>
     </div>
 
     {error&&<div className="alert scanner-alert">{error}</div>}
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <button type="button" onClick={()=>setScanMode("bought")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="bought"?"#b11":"#555",background:scanMode==="bought"?"#6f1010":"#222",color:"#fff"}}>📥 Bought</button>
+      <button type="button" onClick={()=>setScanMode("sold")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="sold"?"#b11":"#555",background:scanMode==="sold"?"#6f1010":"#222",color:"#fff"}}>🛒 Sold</button>
+    </div>
+
+    {scanMode==="bought"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <label style={{margin:0}}>Cost / card (£)<input type="number" step="0.0001" min="0" value={buyCost} onChange={e=>setBuyCost(e.target.value)} /></label>
+      <label style={{margin:0}}>Location<select value={buyLocation} onChange={e=>setBuyLocation(e.target.value)}><option value="">No location</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+    </div>}
+    {scanMode==="sold"&&<div style={{marginBottom:12}}>
+      <label style={{margin:0}}>Sale price / card (£)<input type="number" step="0.01" min="0" value={soldPrice} onChange={e=>setSoldPrice(e.target.value)} /></label>
+      <small style={{display:"block",marginTop:5,opacity:.75}}>This is saved with the scan for the sales/accounting step.</small>
+    </div>}
 
     <div className="scanner-content">
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
           <div className="scanner-video-layer" style={{display:"block",visibility:cameraOn?"visible":"hidden"}}>
             <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
-            {shot&&<div className="scanner-captured-overlay"><img src={shot} alt="Captured card"/><span>✓ CARD CAPTURED</span></div>}
           </div>
           {!cameraOn&&<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
@@ -1316,60 +1396,68 @@ function CardScanner(){
         <div className="scanner-controls">
           {!cameraOn
             ?<button className="scanner-primary" onClick={startCamera} disabled={busy}>{busy?"Opening camera…":"Open camera"}</button>
-            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card" disabled={!cameraReady}><span>●</span><b>{shot?"Retake":"Capture"}</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
+            :<><button type="button" className="scanner-capture" onClick={capture} aria-label="Capture card" disabled={!cameraReady}><span>●</span><b>Capture & queue</b></button><button className="ghost" onClick={stopCamera}>Stop</button></>
           }
         </div>
 
-        {shot&&<div className="scanner-identify-actions">
-          <button className="scanner-primary" onClick={identifyCard} disabled={ocrBusy}>{ocrBusy?`Identifying… ${ocrProgress}%`:"Identify card"}</button>
-          <button className="ghost" onClick={clearCapture} disabled={ocrBusy}>Clear</button>
-        </div>}
-
-        <p className="scanner-hint">{cameraOn&&!cameraReady?"Starting camera preview…":cameraOn?"Hold the card flat, keep all four corners visible and make sure the bottom collector number is visible.":"Camera capture is ready — next we'll identify the card from the captured image."}</p>
+        <p className="scanner-hint">{cameraOn&&!cameraReady?"Starting camera preview…":cameraOn?"Capture cards continuously. Nothing changes in inventory until you accept a reviewed scan.":"Camera capture is ready — open the camera to start scanning."}</p>
       </div>
 
       <div className="scanner-result">
-        <div className="scanner-result-head"><span className="eyebrow">{identified?"IDENTIFIED":candidates.length?"MATCHES":"CAPTURE"}</span>{shot&&<button className="ghost" onClick={clearCapture}>Clear</button>}</div>
+        <div className="scanner-result-head"><span className="eyebrow">SCAN QUEUE</span><button className="ghost" onClick={removeCompleted} disabled={!acceptedCount&&!rejectedCount}>Clear done</button></div>
 
-        {ocrBusy&&<div className="scanner-empty"><span>🔎</span><b>Reading card…</b><small>OCR is reading the card name and collector number.</small></div>}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+          <span className="tag" style={{padding:"6px 9px"}}>📸 {pendingCount} pending</span>
+          <span className="tag" style={{padding:"6px 9px"}}>🔎 {reviewCount} review</span>
+          <span className="tag" style={{padding:"6px 9px"}}>📥 {reviewQueue.filter(x=>x.mode==="bought"&&x.status==="review").length} bought</span>
+          <span className="tag" style={{padding:"6px 9px"}}>🛒 {reviewQueue.filter(x=>x.mode==="sold"&&x.status==="review").length} sold</span>
+        </div>
 
-        {!ocrBusy&&!shot&&<div className="scanner-empty"><span>📸</span><b>No card captured</b><small>Your captured card will appear here.</small></div>}
+        {reviewQueue.length>0&&<button className="scanner-primary" onClick={processQueue} disabled={processingQueue||ocrBusy||!pendingCount} style={{width:"100%",marginBottom:12}}>{processingQueue?"Processing queue…":"🔎 Process pending scans"}</button>}
 
-        {!ocrBusy&&shot&&identified&&<div className="scanner-identification">
-          {identified.image?<img src={identified.image} alt={identified.name||"Identified card"}/>:null}
-          <div className="scanner-identification-info">
-            <b>{identified.englishName&&identified.englishName!==identified.name?identified.englishName:identified.name}</b>
-            {identified.englishName&&identified.englishName!==identified.name?<small>{identified.name} · {identified.scannerLanguageName||"Localized"}</small>:null}
-            <small>{identified.set?.name||"Set not available"} · #{identified.localId}</small>
-            <small>{identified.rarity||"Rarity not available"}</small>
-            <strong>✓ Exact candidate</strong>
+        {!reviewQueue.length&&<div className="scanner-empty"><span>📋</span><b>Queue is empty</b><small>Capture cards and they will wait here for review.</small></div>}
+
+        {reviewQueue.slice().reverse().map(item=>{
+          const display=item.identified;
+          return <div key={item.id} style={{border:"1px solid #3a3333",borderRadius:14,padding:10,marginBottom:9,background:"#171313"}}>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}><b>{item.mode==="bought"?"📥 Bought":"🛒 Sold"} · {item.status==="captured"?"Pending":item.status==="identifying"?"Identifying…":item.status==="accepted"?"Accepted":item.status==="rejected"?"Rejected":"Review"}</b></div>
+                {display&&<><b style={{display:"block",marginTop:4}}>{display.englishName&&display.englishName!==display.name?display.englishName:display.name}</b><small>{display.name} · {display.set?.name||"Unknown set"} · #{display.localId}</small></>}
+                {item.mode==="sold"&&<label style={{display:"block",marginTop:7}}>Sale price (£)<input type="number" step="0.01" min="0" value={item.soldPrice??0} onChange={e=>updateQueueItem(item.id,{soldPrice:Number(e.target.value||0)})}/></label>}
+                {!display&&item.status==="captured"&&<small>Waiting to be identified.</small>}
+                {item.status==="identifying"&&<small>OCR + TCGdex are working on this card…</small>}
+                {item.error&&<small style={{display:"block",marginTop:4}}>⚠️ {item.error}</small>}
+              </div>
+            </div>
+
+            {item.candidates?.length>0&&<div style={{marginTop:8}}>
+              <small>Choose the matching printing:</small>
+              {item.candidates.slice(0,8).map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c,item.id)}>
+                {c.image?<img src={c.image} alt=""/>:null}
+                <span><b>{c.englishName&&c.englishName!==c.name?c.englishName:c.name} · #{c.localId}</b><small>{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
+              </button>)}
+            </div>}
+
+            {item.status==="review"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:9}}>
+              <button onClick={()=>acceptQueueItem(item)} disabled={busy||!item.identified}>✅ Accept</button>
+              <button className="ghost" onClick={()=>rejectQueueItem(item.id)}>❌ Reject</button>
+            </div>}
           </div>
-        </div>}
+        })}
 
-        {!ocrBusy&&shot&&!identified&&candidates.length>1&&<div className="scanner-candidates">
-          <b>Choose the matching card</b>
-          <small>OCR found multiple cards. We won't guess between different printings.</small>
-          {candidates.map(c=><button type="button" className="scanner-candidate" key={c.id} onClick={()=>chooseCandidate(c)}>
-            {c.image?<img src={c.image} alt=""/>:null}
-            <span><b>{c.englishName&&c.englishName!==c.name?c.englishName:c.name} · #{c.localId}</b><small>{c.englishName&&c.englishName!==c.name?`${c.name} · `:""}{c.set?.name||"Unknown set"} · {c.rarity||"Card"}</small></span>
-          </button>)}
-        </div>}
-
-        {!ocrBusy&&shot&&!identified&&!candidates.length&&!error&&<div className="scanner-empty"><span>🔎</span><b>Ready to identify</b><small>Tap Identify card to read the captured image.</small></div>}
-
-        {!ocrBusy&&shot&&debugCrops&&<details className="scanner-ocr-details" open><summary>OCR crops (debug)</summary>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:10}}>
+        {!ocrBusy&&shot&&<details className="scanner-ocr-details" style={{marginTop:12}}><summary>Latest capture / OCR debug</summary>
+          {debugCrops&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:10}}>
             <div><small style={{display:"block",marginBottom:5}}>NAME CROP</small><img src={debugCrops.name} alt="OCR name crop" style={{width:"100%",display:"block",background:"#fff",borderRadius:8}}/></div>
             <div><small style={{display:"block",marginBottom:5}}>NUMBER CROP</small><img src={debugCrops.number} alt="OCR number crop" style={{width:"100%",display:"block",background:"#fff",borderRadius:8}}/></div>
-          </div>
-          <div style={{marginTop:10}}><small style={{display:"block",marginBottom:5}}>CARD CROP</small><img src={debugCrops.card} alt="OCR card crop" style={{width:"100%",display:"block",background:"#fff",borderRadius:8}}/></div>
+          </div>}
+          {ocrText&&<details className="scanner-ocr-details"><summary>OCR text</summary><pre>{ocrText}</pre></details>}
         </details>}
-        {!ocrBusy&&shot&&ocrText&&<details className="scanner-ocr-details"><summary>OCR text</summary><pre>{ocrText}</pre></details>}
       </div>
     </div>
   </div>
 }
-
 function Locations({locations,onDone}){
  const [name,setName]=useState(""),[desc,setDesc]=useState("");
  async function add(){if(!name.trim())return;await supabase.from("locations").insert({name:name.trim(),description:desc||null});setName("");setDesc("");await onDone()}
