@@ -980,27 +980,57 @@ function CardScanner({locations=[]}){
       streamRef.current=stream;
       video.muted=true;video.playsInline=true;video.autoplay=true;
       video.setAttribute("playsinline","");video.setAttribute("webkit-playsinline","");
-      video.srcObject=stream;setCameraOn(true);
-      await new Promise(resolve=>{
+      // Keep the video element mounted and explicitly make it visible. This is
+      // deliberately a little more defensive than the previous scanner: some
+      // mobile browsers attach the MediaStream successfully but do not paint the
+      // first frame until canplay/playing fires.
+      video.srcObject=stream;
+      video.style.display="block";
+      video.style.visibility="visible";
+      video.style.opacity="1";
+      setCameraOn(true);
+
+      await new Promise((resolve,reject)=>{
         let done=false;
         const finish=()=>{
           if(done)return;done=true;
           video.removeEventListener("loadedmetadata",finish);
-          video.removeEventListener("canplay",finish);resolve();
+          video.removeEventListener("canplay",finish);
+          video.removeEventListener("playing",finish);
+          resolve();
         };
+        const fail=()=>{if(!done){done=true;reject(new Error("Camera preview did not start."))}};
         video.addEventListener("loadedmetadata",finish,{once:true});
         video.addEventListener("canplay",finish,{once:true});
-        if(video.readyState>=1)finish();
-        setTimeout(()=>{if(!done)finish()},2000);
+        video.addEventListener("playing",finish,{once:true});
+        if(video.readyState>=2)finish();
+        setTimeout(()=>{if(!done)finish()},2500);
       });
+
       if(generation!==cameraGenerationRef.current)return;
-      try{
-        const promise=video.play();playPromiseRef.current=promise;await promise;
-      }catch(e){if(e?.name!=="AbortError")throw e}
-      finally{playPromiseRef.current=null}
+
+      // Try playback once the stream has metadata, then retry after a frame if
+      // Safari/Firefox interrupted the first play request during React repaint.
+      let played=false;
+      for(let attempt=0;attempt<2&&!played;attempt++){
+        try{
+          const promise=video.play();
+          playPromiseRef.current=promise;
+          await promise;
+          played=true;
+        }catch(e){
+          if(e?.name!=="AbortError")throw e;
+          await new Promise(r=>requestAnimationFrame(r));
+        }finally{playPromiseRef.current=null}
+      }
+
       if(generation===cameraGenerationRef.current){
-        if(video.videoWidth&&video.videoHeight)setCameraReady(true);
-        else setError("Camera opened but no video frames are available yet. Try again.");
+        if(video.videoWidth&&video.videoHeight){
+          setCameraReady(true);
+          // Force one more paint on browsers that initially render a black video
+          // until the next animation frame.
+          requestAnimationFrame(()=>{if(videoRef.current===video)video.style.visibility="visible"});
+        }else setError("Camera opened but no video frames are available yet. Try again.");
       }
     }catch(e){
       if(generation===cameraGenerationRef.current){
@@ -1386,8 +1416,8 @@ function CardScanner({locations=[]}){
     <div className="scanner-content">
       <div className="scanner-camera-wrap">
         <div className="scanner-camera">
-          <div className="scanner-video-layer" style={{display:"block",visibility:cameraOn?"visible":"hidden"}}>
-            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
+          <div className="scanner-video-layer" style={{display:cameraOn?"block":"none",visibility:"visible",opacity:1}}>
+            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" style={{display:"block",visibility:"visible",opacity:1,width:"100%",height:"100%",objectFit:"cover",background:"#111"}}/>
           </div>
           {!cameraOn&&<div className="scanner-off"><span>📷</span><b>Camera is off</b><small>Use your phone's rear camera and place one card inside the frame.</small></div>}
           {cameraOn&&<div className="scanner-frame" aria-hidden="true"><span className="corner tl"/><span className="corner tr"/><span className="corner bl"/><span className="corner br"/><div className="scanner-guide">FIT CARD INSIDE FRAME</div></div>}
