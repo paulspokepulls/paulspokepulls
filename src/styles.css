@@ -246,3 +246,50 @@ button:not(.ghost):not(.x):not(.suggestion):not(.editbtn):not(.deletebtn):hover{
   }
   .scanner-sold-field{grid-template-columns:1fr}
 }
+
+
+/* ---------- Scanner navigation: always provide an escape hatch ---------- */
+.scanner-mode .scanner-topbar{
+  display:flex!important;
+  position:sticky;
+  top:0;
+  z-index:50;
+  background:#f7f3f1f2;
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid #e2d9d4;
+}
+.scanner-back{
+  display:inline-flex!important;
+  align-items:center;
+  justify-content:center;
+  min-height:40px;
+  padding:8px 12px;
+  flex:0 0 auto;
+}
+.scanner-back-short{display:none}
+
+@media(max-width:650px){
+  .scanner-mode .scanner-topbar{
+    display:flex!important;
+    flex-direction:row!important;
+    align-items:center!important;
+    padding:10px 12px;
+  }
+  .scanner-back{
+    min-height:42px;
+    padding:8px 11px;
+    border-radius:10px;
+    font-weight:800;
+  }
+  .scanner-back-full{display:inline}
+  .scanner-back-short{display:none}
+  .scanner-title{
+    text-align:center;
+  }
+  .scanner-title .eyebrow{
+    font-size:9px;
+  }
+  .scanner-title b{
+    font-size:15px;
+  }
+}
