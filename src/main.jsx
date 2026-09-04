@@ -1497,18 +1497,18 @@ function CardScanner({locations=[]}){
 
     {error&&<div className="alert scanner-alert">{error}</div>}
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-      <button type="button" onClick={()=>setScanMode("bought")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="bought"?"#b11":"#555",background:scanMode==="bought"?"#6f1010":"#222",color:"#fff"}}>📥 Bought</button>
-      <button type="button" onClick={()=>setScanMode("sold")} style={{padding:"14px 10px",borderRadius:12,fontWeight:800,border:"2px solid",borderColor:scanMode==="sold"?"#b11":"#555",background:scanMode==="sold"?"#6f1010":"#222",color:"#fff"}}>🛒 Sold</button>
+    <div className="scanner-mode-switch">
+      <button type="button" className={scanMode==="bought"?"selected":""} onClick={()=>setScanMode("bought")}>📥 <span>Bought</span></button>
+      <button type="button" className={scanMode==="sold"?"selected":""} onClick={()=>setScanMode("sold")}>🛒 <span>Sold</span></button>
     </div>
 
-    {scanMode==="bought"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-      <label style={{margin:0}}>Cost / card (£)<input type="number" step="0.0001" min="0" value={buyCost} onChange={e=>setBuyCost(e.target.value)} /></label>
-      <label style={{margin:0}}>Location<select value={buyLocation} onChange={e=>setBuyLocation(e.target.value)}><option value="">No location</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
+    {scanMode==="bought"&&<div className="scanner-mode-fields">
+      <label>Cost / card (£)<input type="number" step="0.0001" min="0" value={buyCost} onChange={e=>setBuyCost(e.target.value)} /></label>
+      <label>Location<select value={buyLocation} onChange={e=>setBuyLocation(e.target.value)}><option value="">No location</option>{locations.map(l=><option value={l.id} key={l.id}>{l.name}</option>)}</select></label>
     </div>}
-    {scanMode==="sold"&&<div style={{marginBottom:12}}>
-      <label style={{margin:0}}>Sale price / card (£)<input type="number" step="0.01" min="0" value={soldPrice} onChange={e=>setSoldPrice(e.target.value)} /></label>
-      <small style={{display:"block",marginTop:5,opacity:.75}}>This is saved with the scan for the sales/accounting step.</small>
+    {scanMode==="sold"&&<div className="scanner-mode-fields scanner-sold-field">
+      <label>Sale price / card (£)<input type="number" step="0.01" min="0" value={soldPrice} onChange={e=>setSoldPrice(e.target.value)} /></label>
+      <small>This is saved with the scan for the sales/accounting step.</small>
     </div>}
 
     <div className="scanner-content">
@@ -1548,7 +1548,7 @@ function CardScanner({locations=[]}){
 
         {reviewQueue.slice().reverse().map(item=>{
           const display=item.identified;
-          return <div key={item.id} style={{border:"1px solid #3a3333",borderRadius:14,padding:10,marginBottom:9,background:"#171313"}}>
+          return <div key={item.id} className="scanner-queue-item" style={{border:"1px solid #3a3333",borderRadius:14,padding:10,marginBottom:9,background:"#171313"}}>
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
               {item.image?<img src={item.image} alt="" style={{width:58,height:78,objectFit:"cover",borderRadius:7,background:"#222"}}/>:null}
               <div style={{flex:1,minWidth:0}}>
